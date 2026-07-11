@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# tmux-attention: record the state of long-running work in a tmux pane.
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../scripts/helpers.sh
+source "$CURRENT_DIR/../scripts/helpers.sh"
+
+usage() {
+  cat <<'EOF'
+usage: tmux-attention <command> [pane_id]
+
+  working  [pane_id]   process started/resumed running
+  blocked  [pane_id]   process needs input/approval (seen rule applies)
+  failed   [pane_id]   process finished unsuccessfully (seen rule applies)
+  done     [pane_id]   process finished (seen rule applies)
+  idle     [pane_id]   process quiesced and nothing is pending
+  unknown  [pane_id]   integration cannot classify the state
+  clear    [pane_id]   remove tracking entirely (pane becomes untracked)
+  toggle   [pane_id]   flip pane between done and idle (manual marking)
+  run [--] <command>   wrapper: working -> run command -> done/failed
+
+pane_id defaults to $TMUX_PANE. Outside tmux every command exits 0 silently
+(run still executes its command and propagates its exit code).
+EOF
+}
+
+# Record a notifying state (blocked/failed/done), applying the seen rule
+# and the blocked guard.
+record() {
+  local pane="$1" state="$2"
+  if pane_focused "$pane"; then
+    # The user is already looking at this pane; nothing to notify.
+    set_pane_state "$pane" idle
+    return 0
+  fi
+  if [ "$(pane_state "$pane")" = blocked ]; then
+    # An unanswered prompt is still the more urgent fact.
+    case "$state" in done | failed) return 0 ;; esac
+  fi
+  set_pane_state "$pane" "$state"
+}
+
+cmd="${1:-}"
+
+case "$cmd" in
+  run)
+    shift
+    [ "${1:-}" = '--' ] && shift
+    if [ "$#" -eq 0 ]; then
+      echo 'tmux-attention: run requires a command' >&2
+      usage >&2
+      exit 1
+    fi
+    pane="${TMUX_PANE:-}"
+    if [ -z "${TMUX:-}" ] || [ -z "$pane" ]; then
+      "$@"
+      exit "$?"
+    fi
+    set_pane_state "$pane" working
+    "$@"
+    rc="$?"
+    if [ "$rc" -eq 0 ]; then
+      record "$pane" done
+    else
+      record "$pane" failed
+    fi
+    exit "$rc"
+    ;;
+  working | blocked | failed | done | idle | unknown | clear | toggle)
+    [ -n "${TMUX:-}" ] || exit 0
+    pane="${2:-${TMUX_PANE:-}}"
+    [ -n "$pane" ] || exit 0
+    tmux display-message -p -t "$pane" '' >/dev/null 2>&1 || exit 0 # dead pane
+    case "$cmd" in
+      working | idle | unknown) set_pane_state "$pane" "$cmd" ;;
+      blocked | failed | done) record "$pane" "$cmd" ;;
+      clear) clear_pane_state "$pane" ;;
+      toggle)
+        # Bypasses the seen rule: marking the currently focused pane so it
+        # shows an icon after you switch away is the whole point.
+        case "$(pane_state "$pane")" in
+          done | failed) set_pane_state "$pane" idle ;;
+          *) set_pane_state "$pane" done ;;
+        esac
+        ;;
+    esac
+    exit 0
+    ;;
+  -h | --help | help)
+    usage
+    exit 0
+    ;;
+  '')
+    usage >&2
+    exit 1
+    ;;
+  *)
+    printf 'tmux-attention: unknown command: %s\n' "$cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
