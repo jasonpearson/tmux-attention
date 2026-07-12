@@ -80,13 +80,13 @@ assert_contains 'status-left interpolates #{attention_global}' \
 assert_contains 'window-status-format interpolates #{attention_window}' \
   "$(T show-option -gqv window-status-format)" "icon.sh window '#{window_id}')"
 assert_contains 'pane-border-format interpolates #{attention_pane} to a pure format' \
-  "$(T show-option -gqv pane-border-format)" '#{?#{==:#{@attention_state},blocked},🔐 ,'
+  "$(T show-option -gqv pane-border-format)" '#{?#{==:#{@attention_state},blocked},🔥 ,'
 assert_eq 'hooks registered exactly once each despite double load' \
   "$(T show-hooks -g | grep -c 'seen\.sh')" 4
 assert_eq 'toggle key bound' \
   "$(T list-keys -T prefix h 2>/dev/null | grep -c tmux-attention)" 1
 assert_eq 'picker key bound' \
-  "$(T list-keys -T prefix N 2>/dev/null | grep -c picker.sh)" 1
+  "$(T list-keys -T prefix a 2>/dev/null | grep -c picker.sh)" 1
 
 # pane scope is a pure format expression, not a #() job: jobs render one
 # redraw late and refresh-client -S never repaints borders, so a job-backed
@@ -94,7 +94,7 @@ assert_eq 'picker key bound' \
 BORDER_FMT="$(T show-option -gqv pane-border-format)"
 T set -p -t "$A1" @attention_state done
 assert_eq 'pane border renders done via pure format' \
-  "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:🔥 '
+  "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:✅ '
 T set -p -t "$A1" @attention_state idle
 assert_eq 'pane border renders nothing for idle' \
   "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:'
@@ -132,17 +132,17 @@ assert_eq 'working overwrites blocked' "$(state_of "$A2")" working
 # --- aggregation and icons ---------------------------------------------------
 
 # alpha: A1=done, A2=working
-assert_eq 'pane icon for done' "$(inside "$A1" bash "$ICON" pane "$A1")" '🔥 '
+assert_eq 'pane icon for done' "$(inside "$A1" bash "$ICON" pane "$A1")" '✅ '
 assert_eq 'window aggregation: done outranks working' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '🔥 '
+  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '✅ '
 inside "$A2" "$BIN" failed
 assert_eq 'window aggregation: failed outranks done' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '❌ '
+  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '☠️ '
 assert_eq 'session aggregation matches window' \
-  "$(inside "$A1" bash "$ICON" session "$A_SID")" '❌ '
+  "$(inside "$A1" bash "$ICON" session "$A_SID")" '☠️ '
 
 assert_eq 'global icon visible from another session' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🔔 '
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🟠 '
 assert_eq 'global icon excludes own session' \
   "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
 
@@ -155,7 +155,7 @@ job="$(T display-message -p -t "$B1" "$inner")"
 assert_eq 'status job carries the session id quoted against sh -c' \
   "$job" "$DIR/scripts/icon.sh global '$B_SID'"
 assert_eq 'global icon renders via the real sh -c job path' \
-  "$(inside "$B1" sh -c "$job")" '🔔 '
+  "$(inside "$B1" sh -c "$job")" '🟠 '
 job_a="$(T display-message -p -t "$A1" "$inner")"
 assert_eq 'own-session ($0) attention stays hidden via the sh -c job path' \
   "$(inside "$A1" sh -c "$job_a")" ''
@@ -164,7 +164,7 @@ assert_eq 'working elsewhere does not trigger global icon' \
   "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
 inside "$G1" "$BIN" unknown
 assert_eq 'unknown elsewhere triggers global icon' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '🔔 '
+  "$(inside "$A1" bash "$ICON" global "$A_SID")" '🟠 '
 assert_eq 'session icon for unknown' \
   "$(inside "$G1" bash "$ICON" session "$G_SID")" '❓ '
 
@@ -186,10 +186,10 @@ T set -g @attention_stale_timeout 30
 assert_eq 'stale working renders as unknown' \
   "$(inside "$B1" bash "$ICON" pane "$B1")" '❓ '
 assert_eq 'stale working counts as attention for global' \
-  "$(inside "$G1" bash "$ICON" global "$G_SID")" '🔔 '
+  "$(inside "$G1" bash "$ICON" global "$G_SID")" '🟠 '
 T set -gu @attention_stale_timeout
 assert_eq 'timeout off: old working stays working' \
-  "$(inside "$B1" bash "$ICON" pane "$B1")" '⚙ '
+  "$(inside "$B1" bash "$ICON" pane "$B1")" '⚙️ '
 
 # --- clear -------------------------------------------------------------------
 
@@ -263,7 +263,7 @@ assert_eq 'run preserves arbitrary exit code' "$?" 7
 
 # current session is beta (control client). gamma=failed, alpha=unknown:
 inside "$A1" "$BIN" unknown
-expected="❌ gamma
+expected="☠️ gamma
 ❓ alpha
 beta"
 assert_eq 'picker list: priority order, current session last' \

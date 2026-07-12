@@ -91,7 +91,7 @@ if [ -n "$toggle_key" ]; then
   tmux bind-key "$toggle_key" run-shell "\"$BIN\" toggle \"#{pane_id}\""
 fi
 
-picker_key="$(attention_option '@attention_picker_key' 'N')"
+picker_key="$(attention_option '@attention_picker_key' 'a')"
 if [ -n "$picker_key" ]; then
   tmux bind-key "$picker_key" display-popup -E -w 60% -h 60% "\"$PICKER\""
 fi

@@ -34,7 +34,7 @@ case "$scope" in
     ;;
   global)
     if global_attention "$target"; then
-      icon="$(attention_option '@attention_icon_global' '🔔')"
+      icon="$(attention_option '@attention_icon_global' '🟠')"
       [ -n "$icon" ] && printf '%s ' "$icon"
     fi
     ;;

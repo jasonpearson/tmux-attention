@@ -40,11 +40,11 @@ is_attention_state() {
 
 state_icon() {
   case "$1" in
-    blocked) attention_option '@attention_icon_blocked' '🔐' ;;
-    failed)  attention_option '@attention_icon_failed' '❌' ;;
-    done)    attention_option '@attention_icon_done' '🔥' ;;
+    blocked) attention_option '@attention_icon_blocked' '🔥' ;;
+    failed)  attention_option '@attention_icon_failed' '☠️' ;;
+    done)    attention_option '@attention_icon_done' '✅' ;;
     unknown) attention_option '@attention_icon_unknown' '❓' ;;
-    working) attention_option '@attention_icon_working' '⚙' ;;
+    working) attention_option '@attention_icon_working' '⚙️' ;;
     idle)    attention_option '@attention_icon_idle' '' ;;
   esac
 }

@@ -19,14 +19,16 @@ downgrades itself.
 
 A tracked pane is in exactly one state:
 
-| State | Meaning | Icon | Priority |
-|---|---|---|---|
-| `blocked` | needs input, approval, or a decision | 🔐 | 1 (highest) |
-| `failed`  | finished unsuccessfully, not yet seen | ❌ | 2 |
-| `done`    | finished, not yet seen | 🔥 | 3 |
-| `unknown` | state can't be classified confidently | ❓ | 4 |
-| `working` | actively running | ⚙ | 5 |
-| `idle`    | finished/waiting and already seen | (none) | 6 |
+| State     | Meaning                               | Default icon | Priority    |
+| --------- | ------------------------------------- | ------------ | ----------- |
+| `blocked` | needs input, approval, or a decision  | 🔥           | 1 (highest) |
+| `failed`  | finished unsuccessfully, not yet seen | ☠️           | 2           |
+| `done`    | finished, not yet seen                | ✅           | 3           |
+| `unknown` | state can't be classified confidently | ❓           | 4           |
+| `working` | actively running                      | ⚙️           | 5           |
+| `idle`    | finished/waiting and already seen     | (none)       | 6           |
+
+Every icon is just a default — see [Configuration](#configuration).
 
 `blocked`, `failed`, `done`, and `unknown` are **attention states** — they
 mean you need to act. Recording `blocked`/`failed`/`done` on the pane you're
@@ -53,7 +55,7 @@ set -g @plugin 'jasonpearson/tmux-attention'
 
 Then `prefix + I` to install.
 
-> **Ordering matters:** list this plugin *after* your theme (e.g.
+> **Ordering matters:** list this plugin _after_ your theme (e.g.
 > catppuccin). Placeholders are interpolated into the status options at load
 > time, so the theme must have built them first — same rule as tmux-battery.
 
@@ -62,12 +64,12 @@ Then `prefix + I` to install.
 Put placeholders wherever you want icons; the plugin replaces them at load
 time. Each renders the icon plus a trailing space, or nothing.
 
-| Placeholder | Shows | Suggested home |
-|---|---|---|
-| `#{attention_pane}` | this pane's state | `pane-border-format` |
-| `#{attention_window}` | highest-priority state in the window | `window-status-format` / `window-status-current-format` |
-| `#{attention_session}` | highest-priority state in the session | session picker (built in); also usable in `status-left` |
-| `#{attention_global}` | 🔔 when any pane in *another* session is in an attention state | `status-left` |
+| Placeholder            | Shows                                                                         | Suggested home                                          |
+| ---------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `#{attention_pane}`    | this pane's state                                                             | `pane-border-format`                                    |
+| `#{attention_window}`  | highest-priority state in the window                                          | `window-status-format` / `window-status-current-format` |
+| `#{attention_session}` | highest-priority state in the session                                         | session picker (built in); also usable in `status-left` |
+| `#{attention_global}`  | 🟠 (configurable) when any pane in _another_ session is in an attention state | `status-left`                                           |
 
 ```tmux
 set -g status-left '#{attention_global}[#S] '
@@ -86,12 +88,12 @@ set -g status-left "#{attention_global}[#S] "
 ```
 
 `#{attention_global}` is deliberately one stable icon rather than a state
-readout: it answers "does anything *elsewhere* need me?" — the session
+readout: it answers "does anything _elsewhere_ need me?" — the session
 picker answers where and what.
 
 ## Session picker
 
-`prefix + N` opens an fzf popup listing all sessions, ordered by attention
+`prefix + a` opens an fzf popup listing all sessions, ordered by attention
 priority (blocked → failed → done → unknown → working, then quiet sessions,
 current session last), each with its aggregate icon.
 
@@ -107,18 +109,50 @@ current session last), each with its aggregate icon.
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [{ "matcher": "", "hooks": [
-      { "type": "command", "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention working" }
-    ]}],
-    "PermissionRequest": [{ "matcher": "", "hooks": [
-      { "type": "command", "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention blocked" }
-    ]}],
-    "Stop": [{ "matcher": "", "hooks": [
-      { "type": "command", "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention done" }
-    ]}],
-    "SessionEnd": [{ "matcher": "", "hooks": [
-      { "type": "command", "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention clear" }
-    ]}]
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention working"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention blocked"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention done"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.tmux/plugins/tmux-attention/bin/tmux-attention clear"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -168,30 +202,30 @@ and get reminded about it after you switch away.
 
 ## Configuration
 
-Set any of these in `tmux.conf` before the plugin loads. Every icon and key
-binding is configurable; an option explicitly set to `''` disables that
-icon/binding.
-
-| Option | Default | Purpose |
-|---|---|---|
-| `@attention_icon_blocked` | `🔐` | Icon for `blocked` |
-| `@attention_icon_failed` | `❌` | Icon for `failed` |
-| `@attention_icon_done` | `🔥` | Icon for `done` |
-| `@attention_icon_working` | `⚙` | Icon for `working` |
-| `@attention_icon_unknown` | `❓` | Icon for `unknown` |
-| `@attention_icon_idle` | (empty) | Icon for `idle` |
-| `@attention_icon_global` | `🔔` | Cross-session icon shown by `#{attention_global}` |
-| `@attention_stale_timeout` | off | Downgrade unrefreshed `working` to `unknown` after N seconds |
-| `@attention_picker_key` | `N` | Session-picker bind (prefix table) |
-| `@attention_picker_kill_key` | `K` | Kill-session key inside the picker |
-| `@attention_toggle_key` | `h` | Manual toggle bind (prefix table) |
-
-Example:
+Every option, shown set to its default. Copy what you want to change into
+`tmux.conf` **before the plugin loads** (above the TPM `run` line). Icons
+can be any string — emoji, Nerd Font glyph, plain text — and setting an
+icon or key to `''` disables it.
 
 ```tmux
-set -g @attention_icon_done '●'
-set -g @attention_stale_timeout 1800
-set -g @attention_toggle_key ''   # disable the toggle binding
+# state icons
+set -g @attention_icon_blocked '🔥'
+set -g @attention_icon_failed  '☠️'
+set -g @attention_icon_done    '✅'
+set -g @attention_icon_unknown '❓'
+set -g @attention_icon_working '⚙️'
+set -g @attention_icon_idle    ''
+
+# cross-session icon shown by #{attention_global}
+set -g @attention_icon_global  '🟠'
+
+# downgrade unrefreshed `working` to `unknown` after N seconds
+set -g @attention_stale_timeout 'off'
+
+# key bindings (prefix table; kill key is inside the picker)
+set -g @attention_toggle_key      'h'
+set -g @attention_picker_key      'a'
+set -g @attention_picker_kill_key 'K'
 ```
 
 ## How it works
