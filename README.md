@@ -198,9 +198,11 @@ set -g @attention_toggle_key ''   # disable the toggle binding
 
 State is stored in tmux **pane user options** (`@attention_state`,
 `@attention_since`) — no files, and state disappears with the pane or
-server. Status placeholders are backed by a small dependency-free shell
-helper; any state change force-refreshes every attached client, so icons in
-other sessions update within ~1s. Focus hooks (`after-select-pane`,
+server. `#{attention_pane}` becomes a pure format expression reading that
+option, so pane-border icons are always current; the aggregate placeholders
+scan panes via a small dependency-free shell helper. Any state change
+force-refreshes every attached client (a full redraw, so pane borders update
+too), and icons in other sessions update within ~1s. Focus hooks (`after-select-pane`,
 `after-select-window`, `client-session-changed`, `client-attached`) are
 registered additively and idempotently, so your own hooks and reloads are
 safe. If `@attention_stale_timeout` is set, a `working` claim that hasn't

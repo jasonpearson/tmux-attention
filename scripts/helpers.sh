@@ -89,12 +89,14 @@ pane_state() {
   tmux display-message -p -t "$1" '#{@attention_state}' 2>/dev/null
 }
 
-# Force every attached client to redraw (and re-run #() jobs in) its status
-# bar, so other sessions see state changes immediately.
+# Force every attached client to fully redraw, so state changes show up
+# immediately everywhere. Not refresh-client -S: that repaints only the
+# status line, leaving pane-border icons stale until the next focus or
+# layout change.
 refresh_all_clients() {
   local client
   tmux list-clients -F '#{client_name}' 2>/dev/null | while IFS= read -r client; do
-    tmux refresh-client -S -t "$client" 2>/dev/null
+    tmux refresh-client -t "$client" 2>/dev/null
   done
   return 0
 }

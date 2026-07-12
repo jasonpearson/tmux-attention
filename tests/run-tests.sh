@@ -79,14 +79,39 @@ assert_contains 'status-left interpolates #{attention_global}' \
   "$(T show-option -gqv status-left)" "icon.sh global '#{session_id}')"
 assert_contains 'window-status-format interpolates #{attention_window}' \
   "$(T show-option -gqv window-status-format)" "icon.sh window '#{window_id}')"
-assert_contains 'pane-border-format interpolates #{attention_pane}' \
-  "$(T show-option -gqv pane-border-format)" "icon.sh pane '#{pane_id}')"
+assert_contains 'pane-border-format interpolates #{attention_pane} to a pure format' \
+  "$(T show-option -gqv pane-border-format)" '#{?#{==:#{@attention_state},blocked},🔐 ,'
 assert_eq 'hooks registered exactly once each despite double load' \
   "$(T show-hooks -g | grep -c 'seen\.sh')" 4
 assert_eq 'toggle key bound' \
   "$(T list-keys -T prefix h 2>/dev/null | grep -c tmux-attention)" 1
 assert_eq 'picker key bound' \
   "$(T list-keys -T prefix N 2>/dev/null | grep -c picker.sh)" 1
+
+# pane scope is a pure format expression, not a #() job: jobs render one
+# redraw late and refresh-client -S never repaints borders, so a job-backed
+# border icon only updated when focus changed.
+BORDER_FMT="$(T show-option -gqv pane-border-format)"
+T set -p -t "$A1" @attention_state done
+assert_eq 'pane border renders done via pure format' \
+  "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:🔥 '
+T set -p -t "$A1" @attention_state idle
+assert_eq 'pane border renders nothing for idle' \
+  "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:'
+T set -pu -t "$A1" @attention_state
+assert_eq 'pane border renders nothing for untracked' \
+  "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:'
+
+# with @attention_stale_timeout on, pane scope keeps the #() job (a format
+# expression cannot compute the working->unknown downgrade)
+T set -g @attention_stale_timeout 30
+T set -g pane-border-format 'P:#{attention_pane}'
+inside "$A1" bash "$DIR/attention.tmux"
+assert_contains 'stale timeout keeps the #() job for pane scope' \
+  "$(T show-option -gqv pane-border-format)" "icon.sh pane '#{pane_id}')"
+T set -gu @attention_stale_timeout
+T set -g pane-border-format 'P:#{attention_pane}'
+inside "$A1" bash "$DIR/attention.tmux"
 
 # --- recording with nothing focused (no attached clients) -------------------
 

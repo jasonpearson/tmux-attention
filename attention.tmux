@@ -18,6 +18,29 @@ BIN="$CURRENT_DIR/bin/tmux-attention"
 
 # --- placeholder interpolation ---------------------------------------------
 
+# Escape a user-configured icon for embedding in a #{?,,} conditional:
+# '#' opens format syntax, ',' and '}' would end the branch early.
+escape_icon() {
+  printf '%s' "$1" | sed 's/#/##/g; s/,/#,/g; s/}/#}/g'
+}
+
+# Build #{attention_pane} as a pure format expression on the pane option
+# instead of a #() job. Job output is cached a redraw behind, and pane
+# borders are not repainted by refresh-client -S at all, so a job-backed
+# border icon only ever caught up on focus/layout changes. A format
+# expression renders the current state on every border redraw. Icons are
+# baked in here, so icon options must be set before the plugin loads (the
+# same load-order rule the icons already have).
+pane_icon_format() {
+  local state icon fmt=''
+  for state in idle working unknown done failed blocked; do
+    icon="$(state_icon "$state")"
+    [ -n "$icon" ] && icon="$(escape_icon "$icon") "
+    fmt="#{?#{==:#{@attention_state},${state}},${icon},${fmt}}"
+  done
+  printf '%s' "$fmt"
+}
+
 interpolate() {
   # The braces in the replacement text live in variables because a literal
   # `}` inside ${var//pat/repl} would end the expansion early.
@@ -25,7 +48,6 @@ interpolate() {
   # `sh -c`: session ids expand to literal `$0`/`$1`/... which the shell
   # would otherwise swallow as its own positional parameters.
   local opt="$1" value new
-  local rep_pane="#($ICON pane '#{pane_id}')"
   local rep_window="#($ICON window '#{window_id}')"
   local rep_session="#($ICON session '#{session_id}')"
   local rep_global="#($ICON global '#{session_id}')"
@@ -37,6 +59,15 @@ interpolate() {
   new="${new//'#{attention_global}'/$rep_global}"
   [ "$new" = "$value" ] || tmux set-option -g "$opt" "$new"
 }
+
+# The stale downgrade (working -> unknown after N seconds) needs date math a
+# format expression cannot do, so keep the #() job for pane scope when the
+# feature is on; those border icons update on the next border repaint.
+if [ "$(stale_timeout_seconds)" -gt 0 ]; then
+  rep_pane="#($ICON pane '#{pane_id}')"
+else
+  rep_pane="$(pane_icon_format)"
+fi
 
 for opt in status-left status-right window-status-format \
   window-status-current-format pane-border-format; do
