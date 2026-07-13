@@ -41,8 +41,8 @@ never overwrite an unanswered `blocked`; `working` overwrites anything.
 
 - tmux ≥ 3.2
 - bash
-- [fzf](https://github.com/junegunn/fzf) (session picker only; everything
-  else works without it)
+- [fzf](https://github.com/junegunn/fzf) ≥ 0.40 (session picker only;
+  everything else works without it)
 
 ## Install
 
@@ -69,7 +69,7 @@ time. Each renders the icon plus a trailing space, or nothing.
 | `#{attention_pane}`    | this pane's state                                                             | `pane-border-format`                                    |
 | `#{attention_window}`  | highest-priority state in the window                                          | `window-status-format` / `window-status-current-format` |
 | `#{attention_session}` | highest-priority state in the session                                         | session picker (built in); also usable in `status-left` |
-| `#{attention_global}`  | 🟠 (configurable) when any pane in _another_ session is in an attention state | `status-left`                                           |
+| `#{attention_global}`  | 👀 (configurable) when any pane in _another_ session is in an attention state | `status-left`                                           |
 
 ```tmux
 set -g status-left '#{attention_global}[#S] '
@@ -93,12 +93,37 @@ picker answers where and what.
 
 ## Session picker
 
-`prefix + a` opens an fzf popup listing all sessions, ordered by attention
-priority (blocked → failed → done → unknown → working, then quiet sessions,
-current session last), each with its aggregate icon.
+`prefix + a` opens an fzf popup listing all sessions, each with its
+aggregate icon and a `▶` expansion indicator.
 
-- **enter** — switch to the session
-- **K** — kill the session and refresh the list
+- **enter** — jump to the selected session, window, or pane
+- **tab** — expand/collapse the highlighted session in place. An expanded
+  session lists every jump target inside it, one flat level: single-pane
+  windows as `icon index:name command ~/path`, panes of multi-pane windows
+  as `icon window.pane command ~/path` (the window itself gets no row —
+  jumping to a pane lands in it). A pane's title is appended as `— title`
+  when it says something the row doesn't already — e.g. Claude Code titles
+  its pane with its current task — and is suppressed when it just repeats
+  the hostname, path, or command. A session holding just one pane isn't
+  expandable at all (it shows no indicator): selecting the session already
+  lands you there.
+- **ctrl-f** — toggle the view between the sessions tree and a flat panes
+  view: every pane on the server as one row,
+  `icon session window.pane command ~/path — title`, with no hierarchy to
+  expand. Under the attention sort the most urgent panes rise to the top,
+  so it doubles as a triage list — and it's the one place the pane inside a
+  single-pane (non-expandable) session shows its command, path, and title.
+  The chosen view persists like the sort mode.
+- **ctrl-s** — cycle the sort mode, shown in the header:
+  - `attention` — blocked → failed → done → unknown → working, then quiet
+    sessions, current session last (the default)
+  - `name` — alphabetical
+  - `recent` — latest activity first (attaching, typing, or pane output)
+
+  The chosen mode is remembered until the tmux server restarts; the picker
+  itself always reopens fully collapsed.
+- **K** — kill whatever the selected row is — session, window, or pane —
+  and refresh the list
 
 ## Feeding it state
 
@@ -217,15 +242,27 @@ set -g @attention_icon_working '⚙️'
 set -g @attention_icon_idle    ''
 
 # cross-session icon shown by #{attention_global}
-set -g @attention_icon_global  '🟠'
+set -g @attention_icon_global  '👀'
 
 # downgrade unrefreshed `working` to `unknown` after N seconds
 set -g @attention_stale_timeout 'off'
 
-# key bindings (prefix table; kill key is inside the picker)
-set -g @attention_toggle_key      'h'
-set -g @attention_picker_key      'a'
-set -g @attention_picker_kill_key 'K'
+# key bindings (prefix table)
+set -g @attention_toggle_key 'h'
+set -g @attention_picker_key 'a'
+
+# keys inside the picker (fzf key names)
+set -g @attention_picker_kill_key   'K'      # kills the selected session/window/pane
+set -g @attention_picker_expand_key 'tab'
+set -g @attention_picker_view_key   'ctrl-f' # sessions tree <-> flat panes view
+set -g @attention_picker_sort_key   'ctrl-s'
+
+# picker view (sessions | panes) and sort mode (attention | name | recent)
+# at server start, and the session expansion indicators
+set -g @attention_picker_view           'sessions'
+set -g @attention_picker_sort           'attention'
+set -g @attention_picker_collapsed_icon '▶'
+set -g @attention_picker_expanded_icon  '▼'
 ```
 
 ## How it works

@@ -48,6 +48,8 @@ A_SID="$(T display-message -p -t alpha: '#{session_id}')"
 B_SID="$(T display-message -p -t beta: '#{session_id}')"
 G_SID="$(T display-message -p -t gamma: '#{session_id}')"
 A_WIN="$(T display-message -p -t alpha: '#{window_id}')"
+B_WIN="$(T display-message -p -t beta: '#{window_id}')"
+G_WIN="$(T display-message -p -t gamma: '#{window_id}')"
 A1="$(T list-panes -t alpha: -F '#{pane_id}' | sed -n 1p)"
 A2="$(T list-panes -t alpha: -F '#{pane_id}' | sed -n 2p)"
 B1="$(T list-panes -t beta: -F '#{pane_id}')"
@@ -142,7 +144,7 @@ assert_eq 'session aggregation matches window' \
   "$(inside "$A1" bash "$ICON" session "$A_SID")" '☠️ '
 
 assert_eq 'global icon visible from another session' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🟠 '
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" '👀 '
 assert_eq 'global icon excludes own session' \
   "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
 
@@ -155,7 +157,7 @@ job="$(T display-message -p -t "$B1" "$inner")"
 assert_eq 'status job carries the session id quoted against sh -c' \
   "$job" "$DIR/scripts/icon.sh global '$B_SID'"
 assert_eq 'global icon renders via the real sh -c job path' \
-  "$(inside "$B1" sh -c "$job")" '🟠 '
+  "$(inside "$B1" sh -c "$job")" '👀 '
 job_a="$(T display-message -p -t "$A1" "$inner")"
 assert_eq 'own-session ($0) attention stays hidden via the sh -c job path' \
   "$(inside "$A1" sh -c "$job_a")" ''
@@ -164,7 +166,7 @@ assert_eq 'working elsewhere does not trigger global icon' \
   "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
 inside "$G1" "$BIN" unknown
 assert_eq 'unknown elsewhere triggers global icon' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '🟠 '
+  "$(inside "$A1" bash "$ICON" global "$A_SID")" '👀 '
 assert_eq 'session icon for unknown' \
   "$(inside "$G1" bash "$ICON" session "$G_SID")" '❓ '
 
@@ -186,7 +188,7 @@ T set -g @attention_stale_timeout 30
 assert_eq 'stale working renders as unknown' \
   "$(inside "$B1" bash "$ICON" pane "$B1")" '❓ '
 assert_eq 'stale working counts as attention for global' \
-  "$(inside "$G1" bash "$ICON" global "$G_SID")" '🟠 '
+  "$(inside "$G1" bash "$ICON" global "$G_SID")" '👀 '
 T set -gu @attention_stale_timeout
 assert_eq 'timeout off: old working stays working' \
   "$(inside "$B1" bash "$ICON" pane "$B1")" '⚙️ '
@@ -263,11 +265,188 @@ assert_eq 'run preserves arbitrary exit code' "$?" 7
 
 # current session is beta (control client). gamma=failed, alpha=unknown:
 inside "$A1" "$BIN" unknown
-expected="☠️ gamma
-❓ alpha
-beta"
-assert_eq 'picker list: priority order, current session last' \
+expected="  ☠️ gamma
+▶ ❓ alpha
+  beta"
+assert_eq 'picker list: attention order, current session last' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f2)" "$expected"
+
+# name mode: pure alphabetical, no current-last override
+T set -g @attention_picker_sort name
+expected="▶ ❓ alpha
+  beta
+  ☠️ gamma"
+assert_eq 'picker list: name order' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f2)" "$expected"
+
+# recent mode: latest activity first. Touch beta, gamma, alpha in ascending
+# recency, >1s apart because activity has second precision; the shell echo
+# of the sent key is pane output, which bumps window_activity.
+T set -g @attention_picker_sort recent
+T send-keys -t beta: ' '
+sleep 1.1
+T send-keys -t gamma: ' '
+sleep 1.1
+T send-keys -t alpha: ' '
+sleep 0.3
+expected="$A_SID
+$G_SID
+$B_SID"
+assert_eq 'picker list: recent order' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+
+# cycling wraps attention -> name -> recent and persists in the global
+# option, which is what carries the choice across picker invocations
+T set -g @attention_picker_sort attention
+inside "$B1" bash "$PICKER" --cycle-sort
+assert_eq 'cycle-sort: attention -> name' \
+  "$(T show-options -gqv @attention_picker_sort)" name
+inside "$B1" bash "$PICKER" --cycle-sort
+assert_eq 'cycle-sort: name -> recent' \
+  "$(T show-options -gqv @attention_picker_sort)" recent
+inside "$B1" bash "$PICKER" --cycle-sort
+assert_eq 'cycle-sort: recent -> attention' \
+  "$(T show-options -gqv @attention_picker_sort)" attention
+
+header="$(inside "$B1" bash "$PICKER" --header)"
+assert_contains 'header shows the view mode' "$header" 'view: sessions'
+assert_contains 'header shows the sort mode' "$header" 'sort: attention'
+assert_contains 'header shows the expand key' "$header" 'tab: expand'
+assert_contains 'header shows the view key' "$header" 'ctrl-f: view'
+assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
+assert_contains 'header shows the kill key' "$header" 'K: kill'
+
+# expanding alpha (1 window, 2 panes) flattens to leaf rows: the panes
+# appear directly under the session, no row for the multi-pane window
+inside "$B1" bash "$PICKER" --toggle "$A_SID"
+expected="$G_SID
+$A_SID
+$A1
+$A2
+$B_SID"
+assert_eq 'expanded session: leaf children glued under parent' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+assert_eq 'expanded session row shows the expanded indicator' \
+  "$(inside "$B1" bash "$PICKER" --list | sed -n 2p | cut -f2)" '▼ ❓ alpha'
+
+# pane titles: appended when informative, suppressed when they repeat the
+# hostname default or the pane's path
+T select-pane -t "$A2" -T 'writing tests'
+assert_contains 'informative pane title appended' \
+  "$(inside "$B1" bash "$PICKER" --list)" '— writing tests'
+assert_eq 'hostname title suppressed' \
+  "$(inside "$B1" bash "$PICKER" --list | grep -Fc " — $(T display-message -p -t alpha: '#{host}')")" 0
+T select-pane -t "$A1" -T "$PWD"
+assert_eq 'title equal to the pane path suppressed' \
+  "$(inside "$B1" bash "$PICKER" --list | grep -Fc " — $PWD")" 0
+
+# --- picker: panes view -------------------------------------------------------
+
+# the flat view lists one row per pane, each sorted by its own state:
+# gamma=failed, A1=unknown, A2=working, beta=idle. Single-pane windows keep
+# their window id and w:name label; panes of multi-pane windows their pane
+# id and w.p label.
+T set -g @attention_picker_view panes
+expected="$G_WIN
+$A1
+$A2
+$B_WIN"
+assert_eq 'panes view: one row per pane, attention order' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+assert_contains 'panes view: pane rows carry session name and w.p label' \
+  "$(inside "$B1" bash "$PICKER" --list | grep -F "${A1}$(printf '\t')")" 'alpha 0.0'
+assert_contains 'panes view: single-pane window rows keep the window name' \
+  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')")" 'beta 0:'
+assert_contains 'panes view: informative pane title still appended' \
+  "$(inside "$B1" bash "$PICKER" --list)" '— writing tests'
+
+# beta is not expandable in the tree, so its pane's title surfaces only here
+T select-pane -t "$B1" -T 'triage me'
+assert_contains 'panes view: single-pane session surfaces its pane title' \
+  "$(inside "$B1" bash "$PICKER" --list)" '— triage me'
+T select-pane -t "$B1" -T ''
+
+# the pane you are in sorts last even when urgent (analog of current-last)
+T set -p -t "$B1" @attention_state blocked
+assert_eq 'panes view: current pane sorts last even when blocked' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | sed -n 4p)" "$B_WIN"
+T set -p -t "$B1" @attention_state idle
+
+# nothing expands in the flat view: alpha stays expanded, nothing collapses
+inside "$B1" bash "$PICKER" --toggle "$A2"
+assert_eq 'panes view: expand toggle is a no-op' \
+  "$(T show-options -gqv @attention_picker_expanded)" "$A_SID"
+
+header="$(inside "$B1" bash "$PICKER" --header)"
+assert_contains 'panes view: header shows the view mode' "$header" 'view: panes'
+assert_eq 'panes view: header omits the expand key' \
+  "$(printf '%s' "$header" | grep -c 'tab: expand')" 0
+
+T set -g @attention_picker_sort name
+expected="$A1
+$A2
+$B_WIN
+$G_WIN"
+assert_eq 'panes view: name order groups panes by session' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+T set -g @attention_picker_sort attention
+
+# the view flips between the two modes and persists in the global option
+inside "$B1" bash "$PICKER" --cycle-view
+assert_eq 'cycle-view: panes -> sessions' \
+  "$(T show-options -gqv @attention_picker_view)" sessions
+inside "$B1" bash "$PICKER" --cycle-view
+assert_eq 'cycle-view: sessions -> panes' \
+  "$(T show-options -gqv @attention_picker_view)" panes
+T set -gu @attention_picker_view
+
+# beta holds a single pane: session, window, and pane rows would all jump
+# to the same place, so it is not expandable and toggling it is a no-op
+inside "$B1" bash "$PICKER" --toggle "$B_SID"
+assert_eq 'single-target session: toggle is a no-op' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | grep -Fxc "$B_WIN")" 0
+assert_eq 'single-target session row carries no indicator' \
+  "$(inside "$B1" bash "$PICKER" --list | sed -n 5p | cut -f2)" '  beta'
+
+# a second window makes beta expandable; both windows are single-pane, so
+# each is itself a leaf, enriched with its lone pane's command and path
+NEW_WIN="$(T new-window -t beta: -P -F '#{window_id}')"
+inside "$B1" bash "$PICKER" --toggle "$B_SID"
+expected="$G_SID
+$A_SID
+$A1
+$A2
+$B_SID
+$B_WIN
+$NEW_WIN"
+assert_eq 'single-pane windows expand to window leaf rows' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+case "$PWD" in
+  "$HOME") SHORT_PWD='~' ;;
+  "$HOME"/*) SHORT_PWD="~${PWD#"$HOME"}" ;;
+  *) SHORT_PWD="$PWD" ;;
+esac
+assert_contains 'window leaf shows its pane command and path' \
+  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')")" "zsh $SHORT_PWD"
+
+# toggling from a child row collapses the owning session
+inside "$B1" bash "$PICKER" --toggle "$A1"
+assert_eq 'toggle via child id collapses the owner' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | grep -Fxc "$A1")" 0
+
+# kill dispatches on the id prefix: @n window, %n pane, $n session. Killing
+# beta's extra window shrinks it back to one pane, so its lingering
+# expanded entry is ignored and its window row disappears with it.
+inside "$B1" bash "$PICKER" --kill "$NEW_WIN"
+assert_eq 'picker --kill kills a window' \
+  "$(T list-windows -t beta: -F '#{window_id}' | grep -Fxc "$NEW_WIN")" 0
+assert_eq 'expansion of a session shrunk to one pane is ignored' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | grep -Fxc "$B_WIN")" 0
+T set -gu @attention_picker_expanded
+NEW_PANE="$(T split-window -t beta: -P -F '#{pane_id}')"
+inside "$B1" bash "$PICKER" --kill "$NEW_PANE"
+assert_eq 'picker --kill kills a pane' \
+  "$(T list-panes -t beta: -F '#{pane_id}' | grep -Fxc "$NEW_PANE")" 0
 
 inside "$B1" bash "$PICKER" --kill "$G_SID"
 if T has-session -t gamma 2>/dev/null; then
