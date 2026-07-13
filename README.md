@@ -117,7 +117,7 @@ aggregate icon and a `▶` expansion indicator.
   The chosen view persists like the sort mode.
 - **ctrl-s** — cycle the sort mode, shown in the header:
   - `attention` — blocked → failed → done → unknown → working, then quiet
-    sessions, current session last (the default)
+    sessions (the default)
   - `name` — alphabetical
   - `recent` — latest activity first (attaching, typing, or pane output)
 

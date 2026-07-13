@@ -280,10 +280,10 @@ inside "$A1" "$BIN" unknown
 expected="  ☠️ gamma
 ▶ ❓ alpha
   beta"
-assert_eq 'picker list: attention order, current session last' \
+assert_eq 'picker list: attention order' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f2)" "$expected"
 
-# name mode: pure alphabetical, no current-last override
+# name mode: pure alphabetical
 T set -g @attention_picker_sort name
 expected="▶ ❓ alpha
   beta
@@ -378,10 +378,10 @@ assert_contains 'panes view: single-pane session surfaces its pane title' \
   "$(inside "$B1" bash "$PICKER" --list)" '— triage me'
 T select-pane -t "$B1" -T ''
 
-# the pane you are in sorts last even when urgent (analog of current-last)
+# no self-demotion: the pane you are in ranks by its own state like any other
 T set -p -t "$B1" @attention_state blocked
-assert_eq 'panes view: current pane sorts last even when blocked' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | sed -n 4p)" "$B_WIN"
+assert_eq 'panes view: current pane ranks by its own state' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | sed -n 1p)" "$B_WIN"
 T set -p -t "$B1" @attention_state idle
 
 # nothing expands in the flat view: alpha stays expanded, nothing collapses

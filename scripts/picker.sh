@@ -153,10 +153,7 @@ flush_session() {
   case "$MODE" in
     name) k1="$S_NAME" ;;
     recent) k1="$S_ACT" ;;
-    *)
-      k1="$S_BEST"
-      [ "$S_ID" = "$CURRENT" ] && k1=9 # current session always sorts last
-      ;;
+    *) k1="$S_BEST" ;;
   esac
   printf '%s\t%s\t%s\t%s\t%s\n' "$k1" "$S_NAME" "$seq" "$S_ID" \
     "${pre}$(icon_for "$S_STATE")${S_NAME}"
@@ -254,10 +251,7 @@ build_pane_rows() {
         [ "$w_act" -gt "$act" ] && act="$w_act"
         k1="$act"
         ;;
-      *)
-        k1="$(state_priority "$eff")"
-        [ "$p_id" = "$CURRENT_PANE" ] && k1=9 # the pane you're in sorts last
-        ;;
+      *) k1="$(state_priority "$eff")" ;;
     esac
     printf '%s\t%s\t%s\t%s\t%s\n' "$k1" "$s_name" "$seq" "$id" \
       "$(icon_for "$eff")${s_name} ${label} ${p_cmd} $(shorten_path "$p_path")$(title_suffix "$p_cmd" "$p_path" "$title")"
@@ -276,13 +270,10 @@ sort_rows() {
 # (%n) id; fzf shows only the display field, so selections stay unambiguous
 # even if a name contains spaces.
 list_rows() {
-  local CURRENT CURRENT_PANE HOST HOST_SHORT VIEW MODE TIMEOUT NOW EXPANDED IND_C IND_E
+  local HOST HOST_SHORT VIEW MODE TIMEOUT NOW EXPANDED IND_C IND_E
   local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE
-  IFS="$TAB" read -r CURRENT CURRENT_PANE HOST HOST_SHORT \
-    <<<"$(tmux display-message -p "#{session_id}${TAB}#{pane_id}${TAB}#{host}${TAB}#{host_short}")"
-  # without an attached client, display-message resolves to the current
-  # session's *active* pane, which is not necessarily the invoking pane
-  [ -n "${TMUX_PANE:-}" ] && CURRENT_PANE="$TMUX_PANE"
+  IFS="$TAB" read -r HOST HOST_SHORT \
+    <<<"$(tmux display-message -p "#{host}${TAB}#{host_short}")"
   VIEW="$(view_mode)"
   MODE="$(sort_mode)"
   TIMEOUT="$(stale_timeout_seconds)"
