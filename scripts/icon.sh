@@ -4,8 +4,8 @@
 #   icon.sh pane    <pane_id>      this pane's state
 #   icon.sh window  <window_id>    highest-priority state in the window
 #   icon.sh session <session_id>   highest-priority state in the session
-#   icon.sh global  <session_id>   cross-session icon when any pane outside
-#                                  the given session is in an attention state
+#   icon.sh global  <session_id>   highest-priority state in all sessions
+#                                  except the given one
 #
 # Runs on every status render, so it stays dependency-free and cheap.
 
@@ -33,10 +33,7 @@ case "$scope" in
     render_icon "$(session_state "$target")"
     ;;
   global)
-    if global_attention "$target"; then
-      icon="$(attention_option '@attention_icon_global' '👀')"
-      [ -n "$icon" ] && printf '%s ' "$icon"
-    fi
+    render_icon "$(global_state "$target")"
     ;;
 esac
 

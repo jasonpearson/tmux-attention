@@ -69,7 +69,7 @@ time. Each renders the icon plus a trailing space, or nothing.
 | `#{attention_pane}`    | this pane's state                                                             | `pane-border-format`                                    |
 | `#{attention_window}`  | highest-priority state in the window                                          | `window-status-format` / `window-status-current-format` |
 | `#{attention_session}` | highest-priority state in the session                                         | session picker (built in); also usable in `status-left` |
-| `#{attention_global}`  | 👀 (configurable) when any pane in _another_ session is in an attention state | `status-left`                                           |
+| `#{attention_global}`  | highest-priority state across all _other_ sessions                             | `status-left`                                           |
 
 ```tmux
 set -g status-left '#{attention_global}[#S] '
@@ -87,9 +87,10 @@ set -g @catppuccin_window_number "#[fg=#{@thm_teal}]#{attention_window}#I"
 set -g status-left "#{attention_global}[#S] "
 ```
 
-`#{attention_global}` is deliberately one stable icon rather than a state
-readout: it answers "does anything _elsewhere_ need me?" — the session
-picker answers where and what.
+`#{attention_global}` aggregates every session except the one you're
+looking at, so it answers "what's the most urgent thing _elsewhere_?" at a
+glance — 🔥 something blocked, ✅ something finished, ⚙️ agents still
+working, nothing when all is quiet. The session picker answers where.
 
 ## Session picker
 
@@ -241,8 +242,6 @@ set -g @attention_icon_unknown '❓'
 set -g @attention_icon_working '⚙️'
 set -g @attention_icon_idle    ''
 
-# cross-session icon shown by #{attention_global}
-set -g @attention_icon_global  '👀'
 
 # downgrade unrefreshed `working` to `unknown` after N seconds
 set -g @attention_stale_timeout 'off'

@@ -29,15 +29,6 @@ state_priority() {
   esac
 }
 
-# Attention states mean the user needs to act; they are what triggers the
-# cross-session (global) signal.
-is_attention_state() {
-  case "$1" in
-    blocked | failed | done | unknown) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 state_icon() {
   case "$1" in
     blocked) attention_option '@attention_icon_blocked' '🔥' ;;
@@ -139,18 +130,13 @@ session_state() {
   tmux list-panes -s -t "$1" -F "#{@attention_state}${TAB}#{@attention_since}" 2>/dev/null | best_state
 }
 
-# True when any pane outside the given session is in an attention state.
-global_attention() {
-  local current="$1" timeout now sid state since
-  timeout="$(stale_timeout_seconds)"
-  now="$(date +%s)"
+# Highest-priority effective state among panes in every session except the
+# given one (empty when nothing outside it is tracked).
+global_state() {
+  local current="$1" sid state since
   tmux list-panes -a -F "#{session_id}${TAB}#{@attention_state}${TAB}#{@attention_since}" 2>/dev/null |
     while IFS="$TAB" read -r sid state since; do
       [ "$sid" = "$current" ] && continue
-      [ -n "$state" ] || continue
-      if is_attention_state "$(effective_state "$state" "$since" "$timeout" "$now")"; then
-        echo 1
-        break
-      fi
-    done | grep -q 1
+      printf '%s\t%s\n' "$state" "$since"
+    done | best_state
 }

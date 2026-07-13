@@ -143,8 +143,8 @@ assert_eq 'window aggregation: failed outranks done' \
 assert_eq 'session aggregation matches window' \
   "$(inside "$A1" bash "$ICON" session "$A_SID")" '☠️ '
 
-assert_eq 'global icon visible from another session' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '👀 '
+assert_eq 'global icon shows the highest-priority state elsewhere' \
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" '☠️ '
 assert_eq 'global icon excludes own session' \
   "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
 
@@ -157,23 +157,32 @@ job="$(T display-message -p -t "$B1" "$inner")"
 assert_eq 'status job carries the session id quoted against sh -c' \
   "$job" "$DIR/scripts/icon.sh global '$B_SID'"
 assert_eq 'global icon renders via the real sh -c job path' \
-  "$(inside "$B1" sh -c "$job")" '👀 '
+  "$(inside "$B1" sh -c "$job")" '☠️ '
 job_a="$(T display-message -p -t "$A1" "$inner")"
 assert_eq 'own-session ($0) attention stays hidden via the sh -c job path' \
   "$(inside "$A1" sh -c "$job_a")" ''
 inside "$G1" "$BIN" working
-assert_eq 'working elsewhere does not trigger global icon' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
+assert_eq 'working elsewhere aggregates as working' \
+  "$(inside "$A1" bash "$ICON" global "$A_SID")" '⚙️ '
 inside "$G1" "$BIN" unknown
-assert_eq 'unknown elsewhere triggers global icon' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '👀 '
+assert_eq 'unknown elsewhere aggregates as unknown' \
+  "$(inside "$A1" bash "$ICON" global "$A_SID")" '❓ '
 assert_eq 'session icon for unknown' \
   "$(inside "$G1" bash "$ICON" session "$G_SID")" '❓ '
+
+# the aggregate spans every other session: blocked in gamma outranks
+# failed in alpha when viewed from beta
+T set -p -t "$G1" @attention_state blocked
+assert_eq 'global picks the highest priority across other sessions' \
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🔥 '
+T set -p -t "$G1" @attention_state unknown
 
 # --- icon configurability ----------------------------------------------------
 
 T set -g @attention_icon_failed 'F!'
 assert_eq 'icon option override' "$(inside "$A1" bash "$ICON" window "$A_WIN")" 'F! '
+assert_eq 'icon override flows through the global aggregate' \
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" 'F! '
 T set -gu @attention_icon_failed
 T set -g @attention_icon_unknown ''
 assert_eq 'explicitly empty icon renders nothing' \
@@ -187,8 +196,11 @@ T set -p -t "$B1" @attention_since "$(($(date +%s) - 100))"
 T set -g @attention_stale_timeout 30
 assert_eq 'stale working renders as unknown' \
   "$(inside "$B1" bash "$ICON" pane "$B1")" '❓ '
-assert_eq 'stale working counts as attention for global' \
-  "$(inside "$G1" bash "$ICON" global "$G_SID")" '👀 '
+# viewed from alpha so beta's stale pane is the highest state elsewhere
+# (gamma idles to keep its unknown from providing the ❓ instead)
+inside "$G1" "$BIN" idle
+assert_eq 'stale working aggregates as unknown for global' \
+  "$(inside "$A1" bash "$ICON" global "$A_SID")" '❓ '
 T set -gu @attention_stale_timeout
 assert_eq 'timeout off: old working stays working' \
   "$(inside "$B1" bash "$ICON" pane "$B1")" '⚙️ '
