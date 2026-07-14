@@ -20,6 +20,9 @@ source "$CURRENT_DIR/helpers.sh"
 # Absolute self-path: fzf binds re-invoke this script from the popup's cwd.
 SELF="$CURRENT_DIR/picker.sh"
 
+# U+FE0F VARIATION SELECTOR-16, the invisible emoji-presentation suffix.
+VS16="$(printf '\xef\xb8\x8f')"
+
 # TAB-separated: tmux vis-escapes control characters in command output, so
 # nothing fancier survives. read treats runs of tabs as one delimiter, which
 # would shift fields left across an empty one, so every field that can be
@@ -29,11 +32,12 @@ SELF="$CURRENT_DIR/picker.sh"
 # a title containing tabs cannot shift the other fields.
 LIST_FMT="#{session_id}${TAB}#{session_name}${TAB}#{session_activity}${TAB}#{window_id}${TAB}#{window_index}${TAB}#{window_activity}${TAB}x#{window_name}${TAB}#{window_panes}${TAB}#{pane_id}${TAB}#{pane_index}${TAB}x#{pane_current_command}${TAB}x#{pane_current_path}${TAB}x#{@attention_state}${TAB}x#{@attention_since}${TAB}x#{pane_title}"
 
-# The active sort mode; anything unrecognized falls back to attention.
+# The active sort mode; anything unrecognized (including the retired
+# "recent" — attention's recency tie-break covers it) falls back to
+# attention.
 sort_mode() {
   case "$(attention_option '@attention_picker_sort' 'attention')" in
     name) printf 'name' ;;
-    recent) printf 'recent' ;;
     *) printf 'attention' ;;
   esac
 }
@@ -93,15 +97,53 @@ icon_for() {
   return 0
 }
 
+# Upper-bound display width of an icon: two cells per visible character.
+# Emoji widths are exactly where wcwidth, tmux, and the terminal disagree,
+# so no one can be *measured* as the authority for what the terminal will
+# draw; assuming the modern-terminal answer (emoji and nerd-font glyphs
+# render two cells) and rounding up is safe, because the gutter is a tab
+# stop — over-estimating only widens it, while under-estimating would
+# bump a row past the stop. Invisible U+FE0F variation selectors (the
+# emoji-presentation suffix in ⚙️ and ☠️) don't count.
+icon_width_est() {
+  local vis="${1//"$VS16"/}"
+  printf '%s' $((${#vis} * 2))
+}
+
+# The icon gutter's tab stop: the widest configured icon plus two cells of
+# separation, or 0 when every state icon is empty (then there is no gutter
+# at all). Expects the I_* icons to be fetched.
+icon_gutter() {
+  local w=0 c icon
+  for icon in "$I_BLOCKED" "$I_FAILED" "$I_DONE" "$I_UNKNOWN" "$I_WORKING" "$I_IDLE"; do
+    c="$(icon_width_est "$icon")"
+    [ "$c" -gt "$w" ] && w="$c"
+  done
+  [ "$w" -gt 0 ] && w=$((w + 2))
+  printf '%s' "$w"
+}
+
+# A display's icon-gutter prefix: "icon TAB" (the field may be empty), the
+# TAB expanded by fzf to the gutter stop. Nothing at all when no icon is
+# configured anywhere — then no view has a gutter. Sessions-tree rows use
+# this too, so both views share one icon column and stay aligned with each
+# other when the view toggles.
+gutter_icon() {
+  [ "${GUTTER:-0}" -gt 0 ] || return 0
+  local icon
+  icon="$(icon_for "$1")"
+  printf '%s\t' "${icon% }"
+}
+
 picker_keys() {
   expand_key="$(attention_option '@attention_picker_expand_key' 'tab')"
   sort_key="$(attention_option '@attention_picker_sort_key' 'ctrl-s')"
-  view_key="$(attention_option '@attention_picker_view_key' 'ctrl-f')"
+  view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
   kill_key="$(attention_option '@attention_picker_kill_key' 'K')"
 }
 
 header_text() {
-  local h view
+  local h view labels NL=$'\n'
   view="$(view_mode)"
   h="view: $view  |  sort: $(sort_mode)  |  enter: jump"
   # nothing expands in the flat panes view, so drop the hint there
@@ -109,6 +151,20 @@ header_text() {
   [ -n "$view_key" ] && h="$h  |  $view_key: view"
   [ -n "$sort_key" ] && h="$h  |  $sort_key: sort"
   [ -n "$kill_key" ] && h="$h  |  $kill_key: kill"
+  # a blank spacer keeps the list from sitting flush against the hints;
+  # the panes table also names its columns below it, sized by the same
+  # column(1) run that pads the rows (see align_pane_rows) — fzf draws the
+  # last header line adjacent to the list. Without labels (sessions view,
+  # or no column(1)) the spacer is a single space: the $(...) that
+  # captures this output and fzf's transform-header both strip a trailing
+  # newline, so a truly empty last line would vanish.
+  labels=''
+  [ "$view" = panes ] && labels="$(list_rows header)"
+  if [ -n "$labels" ]; then
+    h="$h$NL$NL$labels"
+  else
+    h="$h$NL "
+  fi
   printf '%s' "$h"
 }
 
@@ -127,7 +183,7 @@ flush_window() {
     if [ "$W_PANES" -gt 1 ]; then
       S_BUF="${S_BUF}${W_BUF}"
     else
-      S_BUF="${S_BUF}${W_ID}${TAB}    $(icon_for "$W_STATE")${W_LABEL} ${W_CMD} $(shorten_path "$W_PATH")$(title_suffix "$W_CMD" "$W_PATH" "$W_TITLE")${NL}"
+      S_BUF="${S_BUF}${W_ID}${TAB}$(gutter_icon "$W_STATE")    ${W_LABEL} ${W_CMD} $(shorten_path "$W_PATH")$(title_suffix "$W_CMD" "$W_PATH" "$W_TITLE")${NL}"
     fi
   fi
   W_ID=''
@@ -136,11 +192,12 @@ flush_window() {
 
 # Close out the current session group: emit the session row (its aggregate
 # is only known once every window folded in), then the buffered child rows.
-# Rows carry session-level sort keys plus an in-block sequence number so
-# children stay glued under their parent in every sort mode.
+# Rows carry the session's aggregate priority, activity, and name plus an
+# in-block sequence number, so sort_rows can order any mode while children
+# stay glued under their parent.
 flush_session() {
   [ -n "$S_ID" ] || return 0
-  local pre k1 seq=0 line
+  local pre seq=0 line
   # a lone pane means session, window, and pane rows would all jump to the
   # same place: not expandable, no indicator (padding keeps rows aligned)
   if [ "$S_PANES" -le 1 ]; then
@@ -150,27 +207,22 @@ flush_session() {
   else
     pre="${IND_C:+$IND_C }"
   fi
-  case "$MODE" in
-    name) k1="$S_NAME" ;;
-    recent) k1="$S_ACT" ;;
-    *) k1="$S_BEST" ;;
-  esac
-  printf '%s\t%s\t%s\t%s\t%s\n' "$k1" "$S_NAME" "$seq" "$S_ID" \
-    "${pre}$(icon_for "$S_STATE")${S_NAME}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$S_BEST" "$S_ACT" "$S_NAME" "$seq" "$S_ID" \
+    "$(gutter_icon "$S_STATE")${pre}${S_NAME}"
   if [ "$S_PANES" -gt 1 ]; then # ignore a stale expanded entry
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       seq=$((seq + 1))
-      printf '%s\t%s\t%s\t%s\n' "$k1" "$S_NAME" "$seq" "$line"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$S_BEST" "$S_ACT" "$S_NAME" "$seq" "$line"
     done <<<"$S_BUF"
   fi
   S_ID=''
 }
 
 # stdin: LIST_FMT lines, already grouped session -> window -> pane in index
-# order by tmux. stdout: "k1 TAB k2 TAB seq TAB id TAB display" rows.
-# Aggregates fold pane states exactly like best_state: untracked panes
-# never count, and stale working downgrades to unknown.
+# order by tmux. stdout: "priority TAB activity TAB name TAB seq TAB id TAB
+# display" rows. Aggregates fold pane states exactly like best_state:
+# untracked panes never count, and stale working downgrades to unknown.
 build_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since title
   local S_ID='' S_NAME='' S_ACT='' S_BEST=7 S_STATE='' S_BUF='' S_PANES=0
@@ -212,20 +264,23 @@ build_rows() {
       fi
     fi
     if session_expanded "$s_id" && [ "$w_panes" -gt 1 ]; then
-      W_BUF="${W_BUF}${p_id}${TAB}    $(icon_for "$eff")${w_idx}.${p_idx} ${p_cmd} $(shorten_path "$p_path")$(title_suffix "$p_cmd" "$p_path" "$title")${NL}"
+      W_BUF="${W_BUF}${p_id}${TAB}$(gutter_icon "$eff")    ${w_idx}.${p_idx} ${p_cmd} $(shorten_path "$p_path")$(title_suffix "$p_cmd" "$p_path" "$title")${NL}"
     fi
   done
   flush_window
   flush_session
 }
 
-# Flat counterpart of build_rows for the panes view: same stdin and output
-# shape, but one row per pane and no hierarchy. Each row reuses the leaf
-# labels from expanded sessions, prefixed with the session name, and sorts
-# by its own state rather than a session aggregate.
+# Flat counterpart of build_rows for the panes view: same stdin, one row
+# per pane, no hierarchy. Each row reuses the leaf labels from expanded
+# sessions, prefixed with the session name, and sorts by its own state
+# rather than a session aggregate (the keys are the pane's own priority,
+# its recency, and its session's name). Unlike build_rows, the display
+# stays split into icon/session/label/command/path/title fields (empty
+# when absent) for align_pane_rows to pad into columns.
 build_pane_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since title
-  local seq=0 eff k1 act id label
+  local seq=0 eff act id label icon tsfx
 
   while IFS="$TAB" read -r s_id s_name s_act w_id w_idx w_act w_name w_panes \
     p_id p_idx p_cmd p_path state since title; do
@@ -243,35 +298,85 @@ build_pane_rows() {
     else
       id="$p_id" label="${w_idx}.${p_idx}"
     fi
-    case "$MODE" in
-      name) k1="$s_name" ;;
-      recent)
-        # recency = the later of client input in the session and window output
-        act="$s_act"
-        [ "$w_act" -gt "$act" ] && act="$w_act"
-        k1="$act"
-        ;;
-      *) k1="$(state_priority "$eff")" ;;
-    esac
-    printf '%s\t%s\t%s\t%s\t%s\n' "$k1" "$s_name" "$seq" "$id" \
-      "$(icon_for "$eff")${s_name} ${label} ${p_cmd} $(shorten_path "$p_path")$(title_suffix "$p_cmd" "$p_path" "$title")"
+    # recency = the later of client input in the session and window output
+    act="$s_act"
+    [ "$w_act" -gt "$act" ] && act="$w_act"
+    icon="$(icon_for "$eff")"
+    tsfx="$(title_suffix "$p_cmd" "$p_path" "$title")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(state_priority "$eff")" "$act" "$s_name" "$seq" "$id" \
+      "${icon% }" "$s_name" "$label" "$p_cmd" "$(shorten_path "$p_path")" "${tsfx# }"
   done
 }
 
+# Pad build_pane_rows' display fields into aligned columns so the flat view
+# reads as a table. stdin: "id TAB icon TAB session TAB label TAB command
+# TAB path TAB title" rows. The text fields are aligned by column(1) —
+# near-ASCII, where every width model agrees. The icon is not: emoji
+# widths are where wcwidth (what column uses), tmux, and the terminal all
+# disagree, so the icon keeps its own field, terminated by a TAB that fzf
+# expands to the gutter's tab stop (--tabstop = GUTTER). fzf sizes the
+# icon with the same width engine it lays the row out with, which is what
+# keeps icon and iconless rows in step on screen. Empty text fields
+# (command, path) hold their place with a space of content: both column
+# implementations merge delimiter runs, which would shift every field
+# after an empty one. Without column(1), the text degrades to the
+# unaligned single-space join (the icon gutter survives).
+#
+# A column-label row rides along through the same column run, so its widths
+# always match the data's; $1 picks which side comes back:
+#   list    "id TAB icon TAB text" data rows (the default; the icon field
+#           is dropped entirely when no icon is configured, GUTTER 0)
+#   header  the aligned label line alone, its gutter padded with spaces
+#           (fzf does not tab-expand headers); empty when there is nothing
+#           to label (no column(1), so no table)
+align_pane_rows() {
+  local mode="${1:-list}" rows all title_h='' NL=$'\n'
+  rows="$(cat)"
+  [ -n "$rows" ] || return 0
+  if ! command -v column >/dev/null 2>&1; then
+    [ "$mode" = header ] && return 0
+    awk -F "$TAB" -v gutter="${GUTTER:-0}" '{
+      out = $1 "\t" (gutter > 0 ? $2 "\t" : ""); sep = ""
+      for (i = 3; i <= NF; i++) if ($i != "") { out = out sep $i; sep = " " }
+      print out
+    }' <<<"$rows"
+    return 0
+  fi
+  # no label over the icon gutter; "title" only when some row carries one
+  cut -f7 <<<"$rows" | grep -q . && title_h='title'
+  all="${TAB}${TAB}session${TAB}pane${TAB}command${TAB}path${TAB}${title_h}${NL}${rows}"
+  paste <(cut -f1,2 <<<"$all") \
+    <(cut -f3- <<<"$all" |
+      awk -F "$TAB" -v OFS="$TAB" '{ for (i = 1; i < NF; i++) if ($i == "") $i = " "; print }' |
+      column -t -s "$TAB") |
+    case "$mode" in
+      header) awk -F "$TAB" -v pad="${GUTTER:-0}" 'NR == 1 { printf "%*s%s\n", pad, "", $3; exit }' ;;
+      *) if [ "${GUTTER:-0}" -gt 0 ]; then sed 1d; else sed 1d | cut -f1,3-; fi ;;
+    esac
+}
+
+# Rows arrive as "priority TAB activity TAB name TAB seq TAB ...": name
+# mode is purely alphabetical; attention orders by state priority and
+# breaks ties by recency, so the quiet tail (idle, then untracked) reads
+# most-recently-used first — which is why there is no separate recent mode.
+# The trailing keys keep equal rows deterministic and children glued under
+# their parent.
 sort_rows() {
   case "$1" in
-    name) sort -t "$TAB" -k1,1 -k2,2 -k3,3n ;;
-    recent) sort -t "$TAB" -k1,1nr -k2,2 -k3,3n ;;
-    *) sort -t "$TAB" -k1,1n -k2,2 -k3,3n ;;
+    name) sort -t "$TAB" -k3,3 -k4,4n ;;
+    *) sort -t "$TAB" -k1,1n -k2,2nr -k3,3 -k4,4n ;;
   esac
 }
 
 # Rows are "id<TAB>display" where id is a session ($n), window (@n) or pane
 # (%n) id; fzf shows only the display field, so selections stay unambiguous
-# even if a name contains spaces.
+# even if a name contains spaces. "list_rows header" instead prints only
+# the panes view's aligned column-label line (nothing in the sessions
+# view), for header_text.
 list_rows() {
   local HOST HOST_SHORT VIEW MODE TIMEOUT NOW EXPANDED IND_C IND_E
-  local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE
+  local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE GUTTER
   IFS="$TAB" read -r HOST HOST_SHORT \
     <<<"$(tmux display-message -p "#{host}${TAB}#{host_short}")"
   VIEW="$(view_mode)"
@@ -288,10 +393,12 @@ list_rows() {
   I_WORKING="$(state_icon working)"
   I_IDLE="$(state_icon idle)"
 
+  GUTTER="$(icon_gutter)"
   if [ "$VIEW" = panes ]; then
-    tmux list-panes -a -F "$LIST_FMT" 2>/dev/null | build_pane_rows | sort_rows "$MODE" | cut -f4-
+    tmux list-panes -a -F "$LIST_FMT" 2>/dev/null | build_pane_rows | sort_rows "$MODE" | cut -f5- | align_pane_rows "${1:-list}"
   else
-    tmux list-panes -a -F "$LIST_FMT" 2>/dev/null | build_rows | sort_rows "$MODE" | cut -f4-
+    [ "${1:-list}" = header ] && return 0
+    tmux list-panes -a -F "$LIST_FMT" 2>/dev/null | build_rows | sort_rows "$MODE" | cut -f5-
   fi
 }
 
@@ -331,7 +438,6 @@ case "${1:-}" in
   --cycle-sort)
     case "$(sort_mode)" in
       attention) next=name ;;
-      name) next=recent ;;
       *) next=attention ;;
     esac
     tmux set-option -g @attention_picker_sort "$next"
@@ -394,7 +500,16 @@ fi
 tmux set-option -gu @attention_picker_expanded 2>/dev/null
 
 picker_keys
-fzf_args=(--reverse --delimiter "$TAB" --with-nth 2 --header "$(header_text)")
+# panes-view rows are "id TAB icon TAB text": --with-nth shows everything
+# past the id, and --tabstop makes fzf expand the icon field's TAB to the
+# gutter's stop with the same width engine it renders with — the one
+# authority that keeps icon and iconless rows in step on screen (see
+# align_pane_rows). Sessions-view rows have no inner TAB and are unmoved.
+I_BLOCKED="$(state_icon blocked)" I_FAILED="$(state_icon failed)" I_DONE="$(state_icon done)"
+I_UNKNOWN="$(state_icon unknown)" I_WORKING="$(state_icon working)" I_IDLE="$(state_icon idle)"
+GUTTER="$(icon_gutter)"
+fzf_args=(--reverse --delimiter "$TAB" --with-nth '2..' --header "$(header_text)")
+[ "$GUTTER" -gt 0 ] && fzf_args+=(--tabstop "$GUTTER")
 if [ -n "$expand_key" ]; then
   fzf_args+=(--bind "$expand_key:execute-silent(\"$SELF\" --toggle {1})+reload(\"$SELF\" --list)")
 fi
@@ -405,7 +520,9 @@ if [ -n "$view_key" ]; then
   fzf_args+=(--bind "$view_key:execute-silent(\"$SELF\" --cycle-view)+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
 fi
 if [ -n "$kill_key" ]; then
-  fzf_args+=(--bind "$kill_key:execute-silent(\"$SELF\" --kill {1})+reload(\"$SELF\" --list)")
+  # killing a row can change the panes-table column widths, so the header
+  # label line is re-derived along with the list
+  fzf_args+=(--bind "$kill_key:execute-silent(\"$SELF\" --kill {1})+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
 fi
 
 selection="$(list_rows | fzf "${fzf_args[@]}")" || exit 0

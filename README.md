@@ -95,7 +95,7 @@ working, nothing when all is quiet. The session picker answers where.
 ## Session picker
 
 `prefix + a` opens an fzf popup listing all sessions, each with its
-aggregate icon and a `▶` expansion indicator.
+aggregate icon in a left gutter and a `▶` expansion indicator.
 
 - **enter** — jump to the selected session, window, or pane
 - **tab** — expand/collapse the highlighted session in place. An expanded
@@ -108,18 +108,21 @@ aggregate icon and a `▶` expansion indicator.
   the hostname, path, or command. A session holding just one pane isn't
   expandable at all (it shows no indicator): selecting the session already
   lands you there.
-- **ctrl-f** — toggle the view between the sessions tree and a flat panes
+- **shift-tab** — toggle the view between the sessions tree and a flat panes
   view: every pane on the server as one row,
-  `icon session window.pane command ~/path — title`, with no hierarchy to
-  expand. Under the attention sort the most urgent panes rise to the top,
+  `icon session window.pane command ~/path — title`, padded into aligned
+  columns under a header line naming them (via `column`, if installed)
+  and with no hierarchy to expand.
+  Under the attention sort the most urgent panes rise to the top,
   so it doubles as a triage list — and it's the one place the pane inside a
   single-pane (non-expandable) session shows its command, path, and title.
   The chosen view persists like the sort mode.
 - **ctrl-s** — cycle the sort mode, shown in the header:
   - `attention` — blocked → failed → done → unknown → working, then quiet
-    sessions (the default)
+    sessions; ties go to the latest activity (attaching, typing, or pane
+    output), so an all-quiet list reads most-recently-used first (the
+    default)
   - `name` — alphabetical
-  - `recent` — latest activity first (attaching, typing, or pane output)
 
   The chosen mode is remembered until the tmux server restarts; the picker
   itself always reopens fully collapsed.
@@ -253,10 +256,10 @@ set -g @attention_picker_key 'a'
 # keys inside the picker (fzf key names)
 set -g @attention_picker_kill_key   'K'      # kills the selected session/window/pane
 set -g @attention_picker_expand_key 'tab'
-set -g @attention_picker_view_key   'ctrl-f' # sessions tree <-> flat panes view
+set -g @attention_picker_view_key   'shift-tab' # sessions tree <-> flat panes view
 set -g @attention_picker_sort_key   'ctrl-s'
 
-# picker view (sessions | panes) and sort mode (attention | name | recent)
+# picker view (sessions | panes) and sort mode (attention | name)
 # at server start, and the session expansion indicators
 set -g @attention_picker_view           'sessions'
 set -g @attention_picker_sort           'attention'

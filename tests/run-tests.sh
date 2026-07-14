@@ -277,56 +277,70 @@ assert_eq 'run preserves arbitrary exit code' "$?" 7
 
 # current session is beta (control client). gamma=failed, alpha=unknown:
 inside "$A1" "$BIN" unknown
-expected="  ☠️ gamma
-▶ ❓ alpha
+expected="  gamma
+▶ alpha
   beta"
 assert_eq 'picker list: attention order' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f2)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --list | cut -f3)" "$expected"
+assert_eq 'picker list: icons ride the shared gutter field' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f2 | paste -sd, -)" '☠️,❓,'
 
 # name mode: pure alphabetical
 T set -g @attention_picker_sort name
-expected="▶ ❓ alpha
+expected="▶ alpha
   beta
-  ☠️ gamma"
+  gamma"
 assert_eq 'picker list: name order' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f2)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --list | cut -f3)" "$expected"
 
-# recent mode: latest activity first. Touch beta, gamma, alpha in ascending
-# recency, >1s apart because activity has second precision; the shell echo
-# of the sent key is pane output, which bumps window_activity.
-T set -g @attention_picker_sort recent
+# attention mode breaks priority ties by recency (there is no separate
+# recent mode). Touch beta, gamma, alpha in ascending recency, >1s apart
+# because activity has second precision; the shell echo of the sent key is
+# pane output, which bumps window_activity. With every pane idle, the
+# whole list degrades to most-recently-used.
+T set -g @attention_picker_sort attention
 T send-keys -t beta: ' '
 sleep 1.1
 T send-keys -t gamma: ' '
 sleep 1.1
 T send-keys -t alpha: ' '
 sleep 0.3
+T set -p -t "$A1" @attention_state idle
+T set -p -t "$A2" @attention_state idle
+T set -p -t "$G1" @attention_state idle
 expected="$A_SID
 $G_SID
 $B_SID"
-assert_eq 'picker list: recent order' \
+assert_eq 'picker list: attention ties break by recency' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+# a real attention state still outranks any amount of recency
+T set -p -t "$G1" @attention_state failed
+assert_eq 'picker list: attention outranks recency' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | sed -n 1p)" "$G_SID"
+T set -p -t "$A1" @attention_state unknown
+T set -p -t "$A2" @attention_state working
 
-# cycling wraps attention -> name -> recent and persists in the global
-# option, which is what carries the choice across picker invocations
+# cycling flips attention <-> name and persists in the global option,
+# which is what carries the choice across picker invocations
 T set -g @attention_picker_sort attention
 inside "$B1" bash "$PICKER" --cycle-sort
 assert_eq 'cycle-sort: attention -> name' \
   "$(T show-options -gqv @attention_picker_sort)" name
 inside "$B1" bash "$PICKER" --cycle-sort
-assert_eq 'cycle-sort: name -> recent' \
-  "$(T show-options -gqv @attention_picker_sort)" recent
-inside "$B1" bash "$PICKER" --cycle-sort
-assert_eq 'cycle-sort: recent -> attention' \
+assert_eq 'cycle-sort: name -> attention' \
   "$(T show-options -gqv @attention_picker_sort)" attention
 
 header="$(inside "$B1" bash "$PICKER" --header)"
 assert_contains 'header shows the view mode' "$header" 'view: sessions'
 assert_contains 'header shows the sort mode' "$header" 'sort: attention'
 assert_contains 'header shows the expand key' "$header" 'tab: expand'
-assert_contains 'header shows the view key' "$header" 'ctrl-f: view'
+assert_contains 'header shows the view key' "$header" 'shift-tab: view'
 assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
 assert_contains 'header shows the kill key' "$header" 'K: kill'
+assert_eq 'sessions view: header ends in a blank spacer line' \
+  "$(printf '%s' "$header" | sed -n 2p)" ' '
+assert_eq 'sessions view: header has no column-label line' \
+  "$(printf '%s' "$header" | grep -c .)" 2
 
 # expanding alpha (1 window, 2 panes) flattens to leaf rows: the panes
 # appear directly under the session, no row for the multi-pane window
@@ -339,7 +353,7 @@ $B_SID"
 assert_eq 'expanded session: leaf children glued under parent' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
 assert_eq 'expanded session row shows the expanded indicator' \
-  "$(inside "$B1" bash "$PICKER" --list | sed -n 2p | cut -f2)" '▼ ❓ alpha'
+  "$(inside "$B1" bash "$PICKER" --list | sed -n 2p | cut -f2-)" "❓$(printf '\t')▼ alpha"
 
 # pane titles: appended when informative, suppressed when they repeat the
 # hostname default or the pane's path
@@ -365,12 +379,38 @@ $A2
 $B_WIN"
 assert_eq 'panes view: one row per pane, attention order' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+# column padding varies with field widths, so squeeze space runs before
+# matching; the fields themselves must still appear in order
 assert_contains 'panes view: pane rows carry session name and w.p label' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${A1}$(printf '\t')")" 'alpha 0.0'
+  "$(inside "$B1" bash "$PICKER" --list | grep -F "${A1}$(printf '\t')" | tr -s ' ')" 'alpha 0.0'
 assert_contains 'panes view: single-pane window rows keep the window name' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')")" 'beta 0:'
+  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | tr -s ' ')" 'beta 0:'
 assert_contains 'panes view: informative pane title still appended' \
   "$(inside "$B1" bash "$PICKER" --list)" '— writing tests'
+
+# rows are "id TAB icon TAB text" — the icon rides its own tab-terminated
+# field for fzf's --tabstop gutter, while the text fields are padded into
+# aligned columns. The header gains a blank spacer plus a line naming the
+# columns, out of the same column(1) run as the rows, so the label
+# positions must match the data's (both are pure ASCII, making byte
+# offsets via awk index safe to compare).
+if command -v column >/dev/null 2>&1; then
+  assert_eq 'panes view: fields padded into aligned columns' \
+    "$(inside "$B1" bash "$PICKER" --list | grep -Ec 'beta {2,}0:')" 1
+  assert_eq 'panes view: icons ride their own tab-stopped field' \
+    "$(inside "$B1" bash "$PICKER" --list | grep -F "${G_WIN}$(printf '\t')" | cut -f2)" '☠️'
+  assert_eq 'panes view: iconless rows carry an empty icon field' \
+    "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f2)" ''
+  assert_eq 'panes view: blank spacer between the hints and the labels' \
+    "$(inside "$B1" bash "$PICKER" --header | sed -n 2p)" ''
+  labels="$(inside "$B1" bash "$PICKER" --header | sed -n 3p)"
+  assert_contains 'panes view: header carries the column labels' \
+    "$(printf '%s' "$labels" | tr -s ' ')" 'session pane command path title'
+  beta_text="$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f3)"
+  assert_eq 'panes view: header labels line up with the columns' \
+    "$(awk -v s="$labels" 'BEGIN { sub(/^ */, "", s); print index(s, "pane") }')" \
+    "$(awk -v s="$beta_text" 'BEGIN { print index(s, "0:") }')"
+fi
 
 # beta is not expandable in the tree, so its pane's title surfaces only here
 T select-pane -t "$B1" -T 'triage me'
@@ -403,6 +443,21 @@ assert_eq 'panes view: name order groups panes by session' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
 T set -g @attention_picker_sort attention
 
+# attention ties break by recency here too: all idle, the panes of the
+# most recently active window come first, in index order
+T set -p -t "$A1" @attention_state idle
+T set -p -t "$A2" @attention_state idle
+T set -p -t "$G1" @attention_state idle
+expected="$A1
+$A2
+$G_WIN
+$B_WIN"
+assert_eq 'panes view: attention ties break by recency' \
+  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+T set -p -t "$A1" @attention_state unknown
+T set -p -t "$A2" @attention_state working
+T set -p -t "$G1" @attention_state failed
+
 # the view flips between the two modes and persists in the global option
 inside "$B1" bash "$PICKER" --cycle-view
 assert_eq 'cycle-view: panes -> sessions' \
@@ -418,7 +473,7 @@ inside "$B1" bash "$PICKER" --toggle "$B_SID"
 assert_eq 'single-target session: toggle is a no-op' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f1 | grep -Fxc "$B_WIN")" 0
 assert_eq 'single-target session row carries no indicator' \
-  "$(inside "$B1" bash "$PICKER" --list | sed -n 5p | cut -f2)" '  beta'
+  "$(inside "$B1" bash "$PICKER" --list | sed -n 5p | cut -f3)" '  beta'
 
 # a second window makes beta expandable; both windows are single-pane, so
 # each is itself a leaf, enriched with its lone pane's command and path
