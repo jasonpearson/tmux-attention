@@ -139,7 +139,7 @@ picker_keys() {
   expand_key="$(attention_option '@attention_picker_expand_key' 'tab')"
   sort_key="$(attention_option '@attention_picker_sort_key' 'ctrl-s')"
   view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
-  kill_key="$(attention_option '@attention_picker_kill_key' 'K')"
+  kill_key="$(attention_option '@attention_picker_kill_key' 'ctrl-k')"
 }
 
 header_text() {

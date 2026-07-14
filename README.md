@@ -126,7 +126,7 @@ aggregate icon in a left gutter and a `▶` expansion indicator.
 
   The chosen mode is remembered until the tmux server restarts; the picker
   itself always reopens fully collapsed.
-- **K** — kill whatever the selected row is — session, window, or pane —
+- **ctrl-k** — kill whatever the selected row is — session, window, or pane —
   and refresh the list
 
 ## Feeding it state
@@ -253,7 +253,7 @@ set -g @attention_toggle_key 'h'
 set -g @attention_picker_key 'a'
 
 # keys inside the picker (fzf key names)
-set -g @attention_picker_kill_key   'K'      # kills the selected session/window/pane
+set -g @attention_picker_kill_key   'ctrl-k' # kills the selected session/window/pane
 set -g @attention_picker_expand_key 'tab'
 set -g @attention_picker_view_key   'shift-tab' # sessions tree <-> flat panes view
 set -g @attention_picker_sort_key   'ctrl-s'

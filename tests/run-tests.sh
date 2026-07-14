@@ -336,7 +336,7 @@ assert_contains 'header shows the sort mode' "$header" 'sort: attention'
 assert_contains 'header shows the expand key' "$header" 'tab: expand'
 assert_contains 'header shows the view key' "$header" 'shift-tab: view'
 assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
-assert_contains 'header shows the kill key' "$header" 'K: kill'
+assert_contains 'header shows the kill key' "$header" 'ctrl-k: kill'
 assert_eq 'sessions view: header ends in a blank spacer line' \
   "$(printf '%s' "$header" | sed -n 2p)" ' '
 assert_eq 'sessions view: header has no column-label line' \
