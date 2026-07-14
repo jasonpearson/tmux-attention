@@ -10,7 +10,7 @@ downgrades itself.
 - **Tool-agnostic** — anything that can run a shell command can integrate:
   agents via their hook systems, plain commands via a wrapper.
 - **Theme-agnostic** — you place icons with format placeholders; works with
-  catppuccin or any status-bar setup.
+  any theme or status-bar setup.
 - **Fully configurable** — every icon and key binding is a tmux option.
 - **Zero maintenance** — state lives in tmux pane options, so it dies with
   the pane/server; no files, no cleanup, no daemons.
@@ -55,14 +55,17 @@ set -g @plugin 'jasonpearson/tmux-attention'
 
 Then `prefix + I` to install.
 
-> **Ordering matters:** list this plugin _after_ your theme (e.g.
-> catppuccin). Placeholders are interpolated into the status options at load
-> time, so the theme must have built them first — same rule as tmux-battery.
+> **Ordering matters:** list this plugin _after_ your theme. Placeholders
+> are interpolated into the status options at load time, so the theme must
+> have built them first — same rule as tmux-battery.
 
 ## Status bar setup
 
 Put placeholders wherever you want icons; the plugin replaces them at load
 time. Each renders the icon plus a trailing space, or nothing.
+Interpolation covers the global `status-left`, `status-right`,
+`window-status-format`, `window-status-current-format`, and
+`pane-border-format` options — a placeholder anywhere else stays literal.
 
 | Placeholder            | Shows                                                                         | Suggested home                                          |
 | ---------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------- |
@@ -80,12 +83,9 @@ set -g pane-border-status top
 set -g pane-border-format ' #{attention_pane}#{pane_title} '
 ```
 
-With catppuccin, place placeholders inside the theme's building blocks, e.g.:
-
-```tmux
-set -g @catppuccin_window_number "#[fg=#{@thm_teal}]#{attention_window}#I"
-set -g status-left "#{attention_global}[#S] "
-```
+If your theme builds these options itself, place the placeholders inside
+the theme's own configuration blocks instead, and load this plugin after
+the theme.
 
 `#{attention_global}` aggregates every session except the one you're
 looking at, so it answers "what's the most urgent thing _elsewhere_?" at a
@@ -244,7 +244,6 @@ set -g @attention_icon_done    '✅'
 set -g @attention_icon_unknown '❓'
 set -g @attention_icon_working '⚙️'
 set -g @attention_icon_idle    ''
-
 
 # downgrade unrefreshed `working` to `unknown` after N seconds
 set -g @attention_stale_timeout 'off'
