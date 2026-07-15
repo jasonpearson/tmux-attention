@@ -3,9 +3,12 @@
 # in place into their windows and panes, each row with its attention icon.
 # A view toggle swaps the tree for a flat list of every pane on the server.
 # Enter jumps to the selected session, window, or pane; the (configurable)
-# kill key kills whatever the selected row is and reloads the list.
+# kill key kills whatever the selected row is and reloads the list, and the
+# new key hands over to new-session.sh. Inside tmux enter switches the
+# client; run from a plain shell it attaches, so the picker doubles as a
+# standalone session-attach command.
 #
-#   picker.sh                 interactive picker (intended for display-popup)
+#   picker.sh                 interactive picker (popup, or a plain shell)
 #   picker.sh --list          print the rows (used by fzf reload)
 #   picker.sh --toggle <id>   expand/collapse the session owning <id>
 #   picker.sh --cycle-sort    advance the sort mode: attention -> name -> recent
@@ -19,6 +22,7 @@ source "$CURRENT_DIR/helpers.sh"
 
 # Absolute self-path: fzf binds re-invoke this script from the popup's cwd.
 SELF="$CURRENT_DIR/picker.sh"
+NEW="$CURRENT_DIR/new-session.sh"
 
 # U+FE0F VARIATION SELECTOR-16, the invisible emoji-presentation suffix.
 VS16="$(printf '\xef\xb8\x8f')"
@@ -140,17 +144,25 @@ picker_keys() {
   sort_key="$(attention_option '@attention_picker_sort_key' 'ctrl-s')"
   view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
   kill_key="$(attention_option '@attention_picker_kill_key' 'ctrl-k')"
+  new_key="$(attention_option '@attention_picker_new_key' 'ctrl-n')"
 }
 
+# Two lines: what you can press, then what the list is currently showing.
+# fzf renders ANSI in a header line as-is (no --ansi needed, that flag is for
+# list items), which is the only way to dim one line of the header and not
+# the rest — --color=header would take the lot. 90 is bright black: the keys
+# are reference material, the state below them is the live fact.
 header_text() {
-  local h view labels NL=$'\n'
+  local h keys view labels NL=$'\n' DIM=$'\033[90m' OFF=$'\033[0m'
   view="$(view_mode)"
-  h="view: $view  |  sort: $(sort_mode)  |  enter: jump"
+  keys='enter: jump'
   # nothing expands in the flat panes view, so drop the hint there
-  [ -n "$expand_key" ] && [ "$view" = sessions ] && h="$h  |  $expand_key: expand"
-  [ -n "$view_key" ] && h="$h  |  $view_key: view"
-  [ -n "$sort_key" ] && h="$h  |  $sort_key: sort"
-  [ -n "$kill_key" ] && h="$h  |  $kill_key: kill"
+  [ -n "$expand_key" ] && [ "$view" = sessions ] && keys="$keys  |  $expand_key: expand"
+  [ -n "$view_key" ] && keys="$keys  |  $view_key: view"
+  [ -n "$sort_key" ] && keys="$keys  |  $sort_key: sort"
+  [ -n "$kill_key" ] && keys="$keys  |  $kill_key: kill"
+  [ -n "$new_key" ] && keys="$keys  |  $new_key: new"
+  h="${DIM}${keys}${OFF}${NL}view: ${view}  |  sort: $(sort_mode)"
   # a blank spacer keeps the list from sitting flush against the hints;
   # the panes table also names its columns below it, sized by the same
   # column(1) run that pads the rows (see align_pane_rows) — fzf draws the
@@ -467,6 +479,16 @@ case "${1:-}" in
     ;;
 esac
 
+# Go to a session: switching the client when we are inside tmux (the popup
+# case), attaching when we are not (the picker run straight from a shell).
+go_to() {
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$1" 2>/dev/null
+  else
+    tmux attach-session -t "$1" 2>/dev/null
+  fi
+}
+
 # Land the client directly on the selected target: select the window/pane
 # first, then switch, so arrival triggers the seen-rule focus hooks.
 jump() {
@@ -476,24 +498,35 @@ jump() {
       ids="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null)"
       [ -n "$ids" ] || return 0
       tmux select-window -t "$target" 2>/dev/null
-      tmux switch-client -t "$ids" 2>/dev/null
+      go_to "$ids"
       ;;
     '%'*)
       ids="$(tmux display-message -p -t "$target" "#{session_id}${TAB}#{window_id}" 2>/dev/null)"
       [ -n "$ids" ] || return 0
       tmux select-window -t "${ids#*"$TAB"}" 2>/dev/null
       tmux select-pane -t "$target" 2>/dev/null
-      tmux switch-client -t "${ids%%"$TAB"*}" 2>/dev/null
+      go_to "${ids%%"$TAB"*}"
       ;;
     *)
-      tmux switch-client -t "$target" 2>/dev/null
+      go_to "$target"
       ;;
   esac
 }
 
 if ! command -v fzf >/dev/null 2>&1; then
-  tmux display-message 'tmux-attention: session picker requires fzf (not found in PATH)'
+  if [ -n "${TMUX:-}" ]; then
+    tmux display-message 'tmux-attention: session picker requires fzf (not found in PATH)'
+  else
+    printf 'tmux-attention: session picker requires fzf (not found in PATH)\n' >&2
+  fi
   exit 0
+fi
+
+# Run from a shell with no server up, there is nothing to pick from — and
+# every tmux call below would spill "no server running" instead.
+if ! tmux list-sessions >/dev/null 2>&1; then
+  printf 'tmux-attention: no tmux server running\n' >&2
+  exit 1
 fi
 
 # Every picker opens fully collapsed; only the sort mode persists.
@@ -523,6 +556,12 @@ if [ -n "$kill_key" ]; then
   # killing a row can change the panes-table column widths, so the header
   # label line is re-derived along with the list
   fzf_args+=(--bind "$kill_key:execute-silent(\"$SELF\" --kill {1})+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
+fi
+if [ -n "$new_key" ]; then
+  # become, not execute: fzf replaces itself with the directory picker, so
+  # the popup simply changes contents (no fzf nested inside fzf). --back
+  # sends a cancelled directory picker straight back here.
+  fzf_args+=(--bind "$new_key:become(\"$NEW\" --back)")
 fi
 
 selection="$(list_rows | fzf "${fzf_args[@]}")" || exit 0

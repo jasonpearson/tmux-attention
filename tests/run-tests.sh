@@ -8,6 +8,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$DIR/bin/tmux-attention"
 ICON="$DIR/scripts/icon.sh"
 PICKER="$DIR/scripts/picker.sh"
+NEWSESSION="$DIR/scripts/new-session.sh"
 SOCK="attention-test-$$"
 
 T() { command tmux -L "$SOCK" "$@"; }
@@ -337,10 +338,17 @@ assert_contains 'header shows the expand key' "$header" 'tab: expand'
 assert_contains 'header shows the view key' "$header" 'shift-tab: view'
 assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
 assert_contains 'header shows the kill key' "$header" 'ctrl-k: kill'
+assert_contains 'header shows the new key' "$header" 'ctrl-n: new'
+# line 1 is the keys, dimmed (fzf renders the ANSI as-is); line 2 is the
+# live view/sort state, in fzf's own header colour
+assert_contains 'header dims the hotkeys line' \
+  "$(printf '%s' "$header" | sed -n 1p)" "$(printf '\033[90m')"
+assert_eq 'header puts view and sort on their own line' \
+  "$(printf '%s' "$header" | sed -n 2p)" 'view: sessions  |  sort: attention'
 assert_eq 'sessions view: header ends in a blank spacer line' \
-  "$(printf '%s' "$header" | sed -n 2p)" ' '
+  "$(printf '%s' "$header" | sed -n 3p)" ' '
 assert_eq 'sessions view: header has no column-label line' \
-  "$(printf '%s' "$header" | grep -c .)" 2
+  "$(printf '%s' "$header" | grep -c .)" 3
 
 # expanding alpha (1 window, 2 panes) flattens to leaf rows: the panes
 # appear directly under the session, no row for the multi-pane window
@@ -402,8 +410,8 @@ if command -v column >/dev/null 2>&1; then
   assert_eq 'panes view: iconless rows carry an empty icon field' \
     "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f2)" ''
   assert_eq 'panes view: blank spacer between the hints and the labels' \
-    "$(inside "$B1" bash "$PICKER" --header | sed -n 2p)" ''
-  labels="$(inside "$B1" bash "$PICKER" --header | sed -n 3p)"
+    "$(inside "$B1" bash "$PICKER" --header | sed -n 3p)" ''
+  labels="$(inside "$B1" bash "$PICKER" --header | sed -n 4p)"
   assert_contains 'panes view: header carries the column labels' \
     "$(printf '%s' "$labels" | tr -s ' ')" 'session pane command path title'
   beta_text="$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f3)"
@@ -521,6 +529,93 @@ if T has-session -t gamma 2>/dev/null; then
 else
   ok 'picker --kill kills the session'
 fi
+
+# --- new session from a directory --------------------------------------------
+# Given a directory, new-session.sh never reaches fzf, so the whole
+# create/switch path is testable headlessly. Every session here is looked up
+# with =name: tmux matches session names by prefix otherwise.
+
+# pwd -P: on macOS the temp dir lives under a /var -> /private/var symlink,
+# and tmux reports the resolved path
+TMPROOT="$(cd "$(mktemp -d)" && pwd -P)"
+mkdir -p "$TMPROOT/proj" "$TMPROOT/my.proj" "$TMPROOT/bet"
+
+inside "$B1" bash "$NEWSESSION" "$TMPROOT/proj"
+assert_eq 'new-session names the session after the directory leaf' \
+  "$(T has-session -t '=proj' 2>/dev/null && echo yes)" yes
+# "=name" is a session target; a pane target (display-message -t) does not
+# take one, so the pane comes back through list-panes
+assert_eq 'new-session roots the session in the directory' \
+  "$(T list-panes -t '=proj' -F '#{pane_current_path}' | sed -n 1p)" "$TMPROOT/proj"
+
+# tmux rewrites "." and ":" in session names; doing it ourselves up front is
+# what lets has-session find a session we created earlier
+inside "$B1" bash "$NEWSESSION" "$TMPROOT/my.proj"
+assert_eq 'new-session sanitizes the session name' \
+  "$(T has-session -t '=my_proj' 2>/dev/null && echo yes)" yes
+
+# an existing session of that name wins — no second "proj"
+inside "$B1" bash "$NEWSESSION" "$TMPROOT/proj"
+assert_eq 'new-session reuses an existing session of the same name' \
+  "$(T list-sessions -F '#{session_name}' | grep -Fxc proj)" 1
+
+# ...but only on an exact match: "bet" must not land in "beta"
+inside "$B1" bash "$NEWSESSION" "$TMPROOT/bet"
+assert_eq 'new-session does not prefix-match an existing session' \
+  "$(T has-session -t '=bet' 2>/dev/null && echo yes)" yes
+
+sessions_before="$(T list-sessions -F '#{session_name}' | grep -c .)"
+inside "$B1" bash "$NEWSESSION" "$TMPROOT/does-not-exist" 2>/dev/null
+assert_eq 'new-session on a missing directory errors' "$?" 1
+assert_eq 'new-session on a missing directory creates nothing' \
+  "$(T list-sessions -F '#{session_name}' | grep -c .)" "$sessions_before"
+
+# the CLI delegates: this is the entry point a shell alias would use
+inside "$B1" "$BIN" new "$TMPROOT/cli"
+assert_eq 'tmux-attention new rejects a missing directory' \
+  "$(T has-session -t '=cli' 2>/dev/null && echo yes)" ''
+mkdir -p "$TMPROOT/cli"
+inside "$B1" "$BIN" new "$TMPROOT/cli"
+assert_eq 'tmux-attention new creates the session' \
+  "$(T has-session -t '=cli' 2>/dev/null && echo yes)" yes
+
+rm -rf "$TMPROOT"
+
+# --- how the directory walk is configured ------------------------------------
+
+wargs="$(inside "$B1" bash "$NEWSESSION" --walker-args)"
+assert_contains 'walk includes hidden directories by default' \
+  "$wargs" '--walker=dir,hidden'
+assert_contains 'walk skips the cache/build directories by default' \
+  "$wargs" '--walker-skip=.git,node_modules,Library,'
+assert_eq 'walk never follows symlinks' \
+  "$(printf '%s' "$wargs" | grep -c follow)" 0
+assert_contains 'walk starts at $HOME by default' "$wargs" "--walker-root=$HOME"
+
+T set -g @attention_picker_dir_hidden off
+assert_contains 'dir_hidden off drops hidden directories' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker=dir'
+assert_eq 'dir_hidden off leaves no hidden flag' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c hidden)" 0
+T set -g @attention_picker_dir_hidden on
+assert_contains 'dir_hidden on restores them' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker=dir,hidden'
+T set -gu @attention_picker_dir_hidden
+
+T set -g @attention_picker_dir_skip 'foo,bar'
+assert_contains 'dir_skip replaces the skip list' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker-skip=foo,bar'
+# an empty skip list is "descend into everything", not an empty argument
+T set -g @attention_picker_dir_skip ''
+assert_eq 'an empty dir_skip drops the flag' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c walker-skip)" 0
+T set -gu @attention_picker_dir_skip
+
+# tmux expands ~ in a double-quoted option value but not a single-quoted one
+T set -g @attention_picker_dir_root '~/code'
+assert_contains 'dir_root expands a literal ~' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args)" "--walker-root=$HOME/code"
+T set -gu @attention_picker_dir_root
 
 # --- outside tmux ------------------------------------------------------------
 

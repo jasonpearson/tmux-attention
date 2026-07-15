@@ -19,8 +19,14 @@ usage: tmux-attention <command> [pane_id]
   toggle   [pane_id]   flip pane between done and idle (manual marking)
   run [--] <command>   wrapper: working -> run command -> done/failed
 
-pane_id defaults to $TMUX_PANE. Outside tmux every command exits 0 silently
-(run still executes its command and propagates its exit code).
+  pick                 fuzzy-find a session/window/pane and go to it
+  new [dir]            fuzzy-find a directory (or take one) and go to a
+                       session for it, named after the directory
+
+pane_id defaults to $TMUX_PANE. Outside tmux every state command exits 0
+silently (run still executes its command and propagates its exit code).
+pick and new are interactive and always do something: inside tmux they
+switch the client, outside it they attach.
 EOF
 }
 
@@ -85,6 +91,17 @@ case "$cmd" in
         ;;
     esac
     exit 0
+    ;;
+  pick)
+    # The interactive pair, exposed here so a shell rc file can alias them.
+    # Unlike the state commands they are useful outside tmux, where they
+    # attach instead of switching the client.
+    shift
+    exec "$CURRENT_DIR/../scripts/picker.sh" "$@"
+    ;;
+  new)
+    shift
+    exec "$CURRENT_DIR/../scripts/new-session.sh" "$@"
     ;;
   -h | --help | help)
     usage

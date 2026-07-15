@@ -42,7 +42,9 @@ never overwrite an unanswered `blocked`; `working` overwrites anything.
 - tmux ≥ 3.2
 - bash
 - [fzf](https://github.com/junegunn/fzf) ≥ 0.40 (session picker only;
-  everything else works without it)
+  everything else works without it). Creating a session from a directory
+  uses fzf's built-in directory walker, which wants ≥ 0.48 — or any fzf,
+  if you name your own source with `@attention_picker_dir_command`.
 
 ## Install
 
@@ -128,6 +130,59 @@ aggregate icon in a left gutter and a `▶` expansion indicator.
   itself always reopens fully collapsed.
 - **ctrl-k** — kill whatever the selected row is — session, window, or pane —
   and refresh the list
+- **ctrl-n** — new session from a directory (below). The popup swaps to the
+  directory picker in place; **esc** brings you back to the session list.
+
+Note that `ctrl-k` and `ctrl-n` take over fzf's own bindings for them (move
+up, move down): the arrow keys, `ctrl-p`, and `ctrl-j` still move.
+
+## New session from a directory
+
+`prefix + A` — or `ctrl-n` inside the session picker — fuzzy-finds a
+directory and takes you to a session for it: an existing session of that
+name if there is one, otherwise a new session rooted in the directory and
+named after its leaf (`~/code/api` → `api`).
+
+The candidates come from fzf's own directory walker, so there is nothing to
+install — no `find`, no `fd`, no `zoxide`. Symlinks are never followed
+(that alone is the difference between a ~10s walk of a big home directory
+and a multi-minute one), and the caches and build outputs nobody opens a
+session in are skipped: on a real `$HOME` that cuts the walk from ~281k
+directories (~14s) to ~29k (~1.2s).
+
+```tmux
+# where the walk starts — the knob that matters most, since a project root
+# walks in well under a second (default: $HOME)
+set -g @attention_picker_dir_root '~/code'
+
+# directory names never descended into, at any depth. Names, not paths:
+# fzf matches one path component (default: below)
+set -g @attention_picker_dir_skip '.git,node_modules,Library,.cache,.Trash,.local,.npm,.cargo,.rustup,.gradle,.m2,.venv,venv,__pycache__,target,dist,build,.next'
+
+# offer dotted directories — worktrees, ~/.config — at all (default: on)
+set -g @attention_picker_dir_hidden 'on'
+```
+
+To replace the source entirely — say, to offer only directories you have
+actually visited — give a command that prints one directory per line. The
+three options above configure a walk that is then no longer happening, so
+they no longer apply:
+
+```tmux
+set -g @attention_picker_dir_command 'zoxide query --list'
+```
+
+### From the shell
+
+Both pickers are also plain commands, so they can be aliased in your shell
+rc. Inside tmux they switch the client; outside it they attach — which makes
+them a way *in* to tmux, not just a way around it:
+
+```sh
+alias tma='tmux-attention pick'   # find a session/window/pane, go to it
+alias tmc='tmux-attention new'    # find a directory, get a session for it
+tmux-attention new ~/code/api     # or skip the picker entirely
+```
 
 ## Feeding it state
 
@@ -223,11 +278,18 @@ tmux-attention unknown  [pane_id]   # integration cannot classify the state
 tmux-attention clear    [pane_id]   # remove tracking entirely
 tmux-attention toggle   [pane_id]   # flip pane between done and idle (manual marking)
 tmux-attention run [--] <command>   # wrapper: working → run command → done/failed
+
+tmux-attention pick                 # session picker: find a target, go to it
+tmux-attention new [dir]            # directory picker: get a session for a directory
 ```
 
 `pane_id` defaults to `$TMUX_PANE`. `toggle` (bound to `prefix + h` by
 default) bypasses the seen rule so you can mark the pane you're looking at
 and get reminded about it after you switch away.
+
+`pick` and `new` are the interactive pair, and the exception to the
+exits-0-silently rule above: they are useful outside tmux, where they attach
+instead of switching the client.
 
 ## Configuration
 
@@ -251,12 +313,20 @@ set -g @attention_stale_timeout 'off'
 # key bindings (prefix table)
 set -g @attention_toggle_key 'h'
 set -g @attention_picker_key 'a'
+set -g @attention_new_key    'A'      # directory picker -> session
 
 # keys inside the picker (fzf key names)
 set -g @attention_picker_kill_key   'ctrl-k' # kills the selected session/window/pane
+set -g @attention_picker_new_key    'ctrl-n' # swaps to the directory picker
 set -g @attention_picker_expand_key 'tab'
 set -g @attention_picker_view_key   'shift-tab' # sessions tree <-> flat panes view
 set -g @attention_picker_sort_key   'ctrl-s'
+
+# where the directory picker looks (see "New session from a directory")
+set -g @attention_picker_dir_root    "$HOME"
+set -g @attention_picker_dir_hidden  'on'     # descend into dotted directories
+set -g @attention_picker_dir_skip    '.git,node_modules,Library,.cache,.Trash,.local,.npm,.cargo,.rustup,.gradle,.m2,.venv,venv,__pycache__,target,dist,build,.next'
+set -g @attention_picker_dir_command ''       # set to replace the source entirely
 
 # picker view (sessions | panes) and sort mode (attention | name)
 # at server start, and the session expansion indicators

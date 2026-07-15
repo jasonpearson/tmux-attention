@@ -14,6 +14,7 @@ source "$CURRENT_DIR/scripts/helpers.sh"
 ICON="$CURRENT_DIR/scripts/icon.sh"
 SEEN="$CURRENT_DIR/scripts/seen.sh"
 PICKER="$CURRENT_DIR/scripts/picker.sh"
+NEW="$CURRENT_DIR/scripts/new-session.sh"
 BIN="$CURRENT_DIR/bin/tmux-attention"
 
 # --- placeholder interpolation ---------------------------------------------
@@ -94,6 +95,13 @@ fi
 picker_key="$(attention_option '@attention_picker_key' 'a')"
 if [ -n "$picker_key" ]; then
   tmux bind-key "$picker_key" display-popup -E -w 60% -h 60% "\"$PICKER\""
+fi
+
+# The directory picker, straight to it — the same screen the picker's new key
+# lands on.
+new_key="$(attention_option '@attention_new_key' 'A')"
+if [ -n "$new_key" ]; then
+  tmux bind-key "$new_key" display-popup -E -w 60% -h 60% "\"$NEW\""
 fi
 
 exit 0

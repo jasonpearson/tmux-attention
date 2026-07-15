@@ -28,6 +28,10 @@ session picker.
   state (blocked/failed/done) downgrade to idle.
 - `scripts/picker.sh` — the fzf popup: sessions tree and flat panes
   views, sorting, column alignment, jump/kill.
+- `scripts/new-session.sh` — directory picker → session named after the
+  directory's leaf. The picker's new key *becomes* this script (fzf
+  replaces itself, so the popup only changes contents); it is also bound
+  directly and runs standalone from a shell.
 - `tests/run-tests.sh` — acceptance tests against an isolated tmux
   server (`-L` socket), safe to run next to a real tmux session:
   `bash tests/run-tests.sh`.
@@ -54,7 +58,31 @@ session picker.
   escapes. Indexed arrays are fine.
 - **fzf floor is 0.40** because of the `transform-header` bind action
   (added exactly in 0.40.0). Check fzf's CHANGELOG before using any
-  newer action and bump the README requirement if you must.
+  newer action and bump the README requirement if you must. The one
+  exception is the directory picker's default source, fzf's built-in
+  walker (`--walker-root`/`--walker-skip`, 0.48): it degrades to a
+  message pointing at `@attention_picker_dir_command`, so the floor for
+  everything else stays 0.40.
+- **The walker must not `follow`**: symlinks turn a ~280k-directory home
+  into a multi-minute walk (~10s without). It only runs when nothing is
+  piped to fzf, so the walker branch must not have stdin. The default
+  skip list is a performance feature, not a preference — it takes that
+  same walk from ~281k directories to ~29k (~14s to ~1.2s), most of it
+  `Library`. `--walker-skip` matches a single path component;
+  multi-component patterns need fzf 0.57.
+- **The picker header dims its first line with a raw ANSI escape**: fzf
+  renders ANSI inside a `--header` as-is (`--ansi` is for list items, and
+  is not needed). It is the only way to colour *one* header line —
+  `--color=header` would take the keys, the state line, and the panes
+  table's column labels together. Header line numbers are asserted in the
+  tests; adding a line shifts them.
+- **Session targets are `=name`**: tmux matches session names by prefix
+  otherwise, so `has-session -t bet` finds `beta` and a new session for
+  `~/bet` would silently switch you into the wrong one. `=name` is a
+  *session* target: `display-message -t` (a pane target) will not take
+  one — reach for `list-panes -t '=name'` instead. tmux also rewrites
+  `.` and `:` in a session name, which is why we do it first: otherwise
+  the has-session lookup misses the session new-session would create.
 - **Tab-delimited plumbing**: `IFS=$TAB read` merges runs of tabs, so
   any field that can be empty carries an `x` sentinel prefix (see
   `LIST_FMT` in picker.sh) and `#{pane_title}` reads last so it can
@@ -78,9 +106,11 @@ session picker.
 - `attention_option` distinguishes *set to empty* (user disabling an
   icon/binding) from *unset* (use default). Don't replace it with
   `${var:-default}`.
-- Outside tmux, every CLI command exits 0 silently (`run` still executes
-  its command and propagates the exit code) so shell configs stay
-  portable.
+- Outside tmux, every CLI *state* command exits 0 silently (`run` still
+  executes its command and propagates the exit code) so shell configs
+  stay portable. `pick` and `new` are the deliberate exception: they are
+  interactive, are meant to be aliased in a shell rc, and attach instead
+  of switching the client when `$TMUX` is unset.
 
 ## Making changes
 
