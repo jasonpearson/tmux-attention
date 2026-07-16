@@ -83,7 +83,7 @@ assert_contains 'status-left interpolates #{attention_global}' \
 assert_contains 'window-status-format interpolates #{attention_window}' \
   "$(T show-option -gqv window-status-format)" "icon.sh window '#{window_id}')"
 assert_contains 'pane-border-format interpolates #{attention_pane} to a pure format' \
-  "$(T show-option -gqv pane-border-format)" '#{?#{==:#{@attention_state},blocked},🔥 ,'
+  "$(T show-option -gqv pane-border-format)" '#{?#{==:#{@attention_state},blocked},🟠 ,'
 assert_eq 'hooks registered exactly once each despite double load' \
   "$(T show-hooks -g | grep -c 'seen\.sh')" 4
 assert_eq 'toggle key bound' \
@@ -97,7 +97,7 @@ assert_eq 'picker key bound' \
 BORDER_FMT="$(T show-option -gqv pane-border-format)"
 T set -p -t "$A1" @attention_state done
 assert_eq 'pane border renders done via pure format' \
-  "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:✅ '
+  "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:🟢 '
 T set -p -t "$A1" @attention_state idle
 assert_eq 'pane border renders nothing for idle' \
   "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:'
@@ -135,17 +135,17 @@ assert_eq 'working overwrites blocked' "$(state_of "$A2")" working
 # --- aggregation and icons ---------------------------------------------------
 
 # alpha: A1=done, A2=working
-assert_eq 'pane icon for done' "$(inside "$A1" bash "$ICON" pane "$A1")" '✅ '
+assert_eq 'pane icon for done' "$(inside "$A1" bash "$ICON" pane "$A1")" '🟢 '
 assert_eq 'window aggregation: done outranks working' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '✅ '
+  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '🟢 '
 inside "$A2" "$BIN" failed
 assert_eq 'window aggregation: failed outranks done' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '☠️ '
+  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '🔴 '
 assert_eq 'session aggregation matches window' \
-  "$(inside "$A1" bash "$ICON" session "$A_SID")" '☠️ '
+  "$(inside "$A1" bash "$ICON" session "$A_SID")" '🔴 '
 
 assert_eq 'global icon shows the highest-priority state elsewhere' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '☠️ '
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🔴 '
 assert_eq 'global icon excludes own session' \
   "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
 
@@ -158,7 +158,7 @@ job="$(T display-message -p -t "$B1" "$inner")"
 assert_eq 'status job carries the session id quoted against sh -c' \
   "$job" "$DIR/scripts/icon.sh global '$B_SID'"
 assert_eq 'global icon renders via the real sh -c job path' \
-  "$(inside "$B1" sh -c "$job")" '☠️ '
+  "$(inside "$B1" sh -c "$job")" '🔴 '
 job_a="$(T display-message -p -t "$A1" "$inner")"
 assert_eq 'own-session ($0) attention stays hidden via the sh -c job path' \
   "$(inside "$A1" sh -c "$job_a")" ''
@@ -175,7 +175,7 @@ assert_eq 'session icon for unknown' \
 # failed in alpha when viewed from beta
 T set -p -t "$G1" @attention_state blocked
 assert_eq 'global picks the highest priority across other sessions' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🔥 '
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🟠 '
 T set -p -t "$G1" @attention_state unknown
 
 # --- icon configurability ----------------------------------------------------
@@ -284,7 +284,7 @@ expected="  gamma
 assert_eq 'picker list: attention order' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f3)" "$expected"
 assert_eq 'picker list: icons ride the shared gutter field' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f2 | paste -sd, -)" '☠️,❓,'
+  "$(inside "$B1" bash "$PICKER" --list | cut -f2 | paste -sd, -)" '🔴,❓,'
 
 # name mode: pure alphabetical
 T set -g @attention_picker_sort name
@@ -406,7 +406,7 @@ if command -v column >/dev/null 2>&1; then
   assert_eq 'panes view: fields padded into aligned columns' \
     "$(inside "$B1" bash "$PICKER" --list | grep -Ec 'beta {2,}0:')" 1
   assert_eq 'panes view: icons ride their own tab-stopped field' \
-    "$(inside "$B1" bash "$PICKER" --list | grep -F "${G_WIN}$(printf '\t')" | cut -f2)" '☠️'
+    "$(inside "$B1" bash "$PICKER" --list | grep -F "${G_WIN}$(printf '\t')" | cut -f2)" '🔴'
   assert_eq 'panes view: iconless rows carry an empty icon field' \
     "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f2)" ''
   assert_eq 'panes view: blank spacer between the hints and the labels' \

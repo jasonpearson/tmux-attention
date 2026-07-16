@@ -108,7 +108,8 @@ icon_for() {
 # render two cells) and rounding up is safe, because the gutter is a tab
 # stop — over-estimating only widens it, while under-estimating would
 # bump a row past the stop. Invisible U+FE0F variation selectors (the
-# emoji-presentation suffix in ⚙️ and ☠️) don't count.
+# emoji-presentation suffix in ⚙️, and in any such icon a user configures)
+# don't count.
 icon_width_est() {
   local vis="${1//"$VS16"/}"
   printf '%s' $((${#vis} * 2))
