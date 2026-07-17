@@ -22,8 +22,8 @@ A tracked pane is in exactly one state:
 | State     | Meaning                               | Default icon | Priority    |
 | --------- | ------------------------------------- | ------------ | ----------- |
 | `blocked` | needs input, approval, or a decision  | 🟠           | 1 (highest) |
-| `failed`  | finished unsuccessfully, not yet seen | 🔴           | 2           |
-| `done`    | finished, not yet seen                | 🟢           | 3           |
+| `failed`  | finished unsuccessfully, not yet seen | ☠️           | 2           |
+| `done`    | finished, not yet seen                | 🔥           | 3           |
 | `unknown` | state can't be classified confidently | ❓           | 4           |
 | `working` | actively running                      | ⚙️           | 5           |
 | `idle`    | finished/waiting and already seen     | (none)       | 6           |
@@ -42,7 +42,7 @@ never overwrite an unanswered `blocked`; `working` overwrites anything.
 ### At-a-glance status bar icons
 
 <!-- Screenshot: a tmux status bar showing attention icons — e.g. 🟠 on one
-     window, 🟢 on another, ⚙️ in the window list — plus a summary icon in
+     window, 🔥 on another, ⚙️ in the window list — plus a summary icon in
      status-left. Ideally across two or three sessions. -->
 
 ![tmux status bar showing attention icons across windows and sessions](docs/status-bar.png)
@@ -51,7 +51,7 @@ tmux-attention gives you one icon per scope — the pane you're in, its
 window, its session, and everything happening _elsewhere_. `#{attention_global}`
 aggregates every session except the one you're looking at, so it answers
 "what's the most urgent thing _elsewhere_?" at a glance — 🟠 something
-blocked, 🟢 something finished, ⚙️ agents still working, nothing when all is
+blocked, 🔥 something finished, ⚙️ agents still working, nothing when all is
 quiet. The session picker answers _where_.
 
 You choose where the icons appear by dropping placeholders into your status
@@ -338,8 +338,8 @@ Every option, shown set to its default:
 ```tmux
 # state icons
 set -g @attention_icon_blocked '🟠'
-set -g @attention_icon_failed  '🔴'
-set -g @attention_icon_done    '🟢'
+set -g @attention_icon_failed  '☠️'
+set -g @attention_icon_done    '🔥'
 set -g @attention_icon_unknown '❓'
 set -g @attention_icon_working '⚙️'
 set -g @attention_icon_idle    ''
