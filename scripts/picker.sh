@@ -601,9 +601,9 @@ if [ -n "$sort_key" ]; then
 fi
 if [ -n "$view_key" ]; then
   if [ "$FROM_DIR" -eq 1 ]; then
-    # reached from the directory picker: the view key round-trips back to it
-    # rather than cycling sessions<->panes (become: the popup swaps in place)
-    fzf_args+=(--bind "$view_key:become(\"$NEW\" --back)")
+    # reached from the directory picker: the view key toggles back to it (emit a
+    # sentinel the main flow turns into `exec "$NEW"`), not cycling sessions<->panes
+    fzf_args+=(--bind "$view_key:become(printf %s $ATTENTION_TOGGLE)")
   else
     fzf_args+=(--bind "$view_key:execute-silent(\"$SELF\" --cycle-view)+reload(\"$SELF\" --list)+transform-header($hdr_self)")
   fi
@@ -615,24 +615,21 @@ if [ -n "$kill_key" ]; then
   fzf_args+=(--bind "$kill_key:execute(\"$SELF\" --kill-confirm {1})+reload(\"$SELF\" --list)+transform-header($hdr_self)")
 fi
 if [ -n "$new_key" ]; then
-  # become, not execute: fzf replaces itself with the directory picker, so
-  # the popup simply changes contents (no fzf nested inside fzf). --back
-  # sends a cancelled directory picker straight back here.
-  fzf_args+=(--bind "$new_key:become(\"$NEW\" --back)")
+  # hand over to the directory picker: emit a sentinel the main flow turns into
+  # `exec "$NEW"`, so it runs at the top level with the terminal (not nested in
+  # this $() with piped std streams, which would break its attach).
+  fzf_args+=(--bind "$new_key:become(printf %s $ATTENTION_TOGGLE)")
 fi
 if [ -n "$cancel_key" ]; then
-  # quit straight to the terminal. become emits a sentinel the shell below
-  # recognizes; the toggle nests pickers via become, so each layer re-emits it
-  # (see below) to unwind the whole stack in one keypress instead of one level.
-  fzf_args+=(--bind "$cancel_key:become(printf %s $ATTENTION_CANCEL)")
+  # quit to the terminal — fzf's own abort (esc does the same). With the pickers
+  # handing off via exec (no nesting), a plain abort exits straight out.
+  fzf_args+=(--bind "$cancel_key:abort")
 fi
 
 selection="$(list_rows | fzf "${fzf_args[@]}")" || exit 0
-if [ "$selection" = "$ATTENTION_CANCEL" ]; then
-  # re-emit when we are a nested layer (reached from the directory picker) so
-  # our caller quits too; the top-level picker just exits to the terminal.
-  [ "$FROM_DIR" -eq 1 ] && printf '%s' "$ATTENTION_CANCEL"
-  exit 0
-fi
+# the view/new key hands over to the directory picker; abort leaves it empty.
+# exec (not fzf `become`) keeps that picker at the top level with the terminal,
+# so its attach works from a bare shell.
+[ "$selection" = "$ATTENTION_TOGGLE" ] && exec "$NEW"
 [ -n "$selection" ] || exit 0
 jump "${selection%%"$TAB"*}"

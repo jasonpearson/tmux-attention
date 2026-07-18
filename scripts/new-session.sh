@@ -5,14 +5,13 @@
 #
 #   new-session.sh                pick a directory, then create/switch
 #   new-session.sh <dir>          skip the picker, straight to create/switch
-#   new-session.sh --back         as above; cancelling returns to the session
-#                                 picker (how picker.sh's new key enters here)
 #   new-session.sh --walker-args  print how the directory walk is configured
+#   new-session.sh --header       print the picker's header hints (used by tests)
 #
-# Standalone on purpose: the session picker's new key *becomes* this script
-# (fzf replaces itself, so the popup only changes contents), a tmux binding
-# can open it directly, and it works from a plain shell — inside tmux it
-# switches the client, outside it attaches.
+# Standalone on purpose: the session picker hands over to this script with
+# `exec` (see picker.sh), a tmux binding can open it directly, and it works from
+# a plain shell — inside tmux it switches the client, outside it attaches. The
+# view key toggles over to the session picker.
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
@@ -83,18 +82,16 @@ walker_args() {
 
 # The directory picker's header hints. The view key — shared with the session
 # picker, where it toggles sessions<->panes — switches over to the session
-# picker from here; esc cancels, or returns to the session picker when we
-# arrived from it (--back). The trailing blank line spaces the hints off the
-# list, as the session picker's header does.
+# picker from here; esc/ctrl-c quit to the terminal. The trailing blank line
+# spaces the hints off the list, as the session picker's header does.
 dir_header() {
-  local view_key cancel_key esc='cancel' hints
+  local view_key cancel_key hints
   view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
   cancel_key="$(attention_option '@attention_picker_cancel_key' 'ctrl-c')"
-  [ "${back:-0}" -eq 1 ] && esc='back'
   hints='enter: create/switch'
   [ -n "$view_key" ] && hints="$hints  |  $view_key: sessions"
   [ -n "$cancel_key" ] && hints="$hints  |  $cancel_key: quit"
-  printf '%s  |  esc: %s\n ' "$hints" "$esc"
+  printf '%s  |  esc: cancel\n ' "$hints"
 }
 
 # The candidate directories. By default fzf walks the tree itself — no fd, no
@@ -109,12 +106,12 @@ pick_dir() {
   view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
   cancel_key="$(attention_option '@attention_picker_cancel_key' 'ctrl-c')"
   local args=(--reverse --prompt 'new session > ' --header "$(dir_header)")
-  # the view key jumps to the session picker — become: fzf replaces itself, so
-  # the popup just changes contents. --from-dir tells the picker to send the
-  # same key straight back here, so the two form one shift-tab round-trip.
-  [ -n "$view_key" ] && args+=(--bind "$view_key:become(\"$PICKER\" --from-dir)")
-  # cancel key: quit straight to the terminal, unwinding the whole become chain
-  [ -n "$cancel_key" ] && args+=(--bind "$cancel_key:become(printf %s $ATTENTION_CANCEL)")
+  # the view key hands over to the session picker: emit a sentinel the main flow
+  # turns into `exec "$PICKER"` (see below), so the picker runs at the top level
+  # with the terminal — not nested in this $() with piped std streams.
+  [ -n "$view_key" ] && args+=(--bind "$view_key:become(printf %s $ATTENTION_TOGGLE)")
+  # cancel key: fzf's own abort returns to the terminal (esc does the same)
+  [ -n "$cancel_key" ] && args+=(--bind "$cancel_key:abort")
   if [ -n "$cmd" ]; then
     sh -c "$cmd" 2>/dev/null | fzf "${args[@]}"
     return "$?"
@@ -172,11 +169,7 @@ if [ "${1:-}" = '--header' ]; then # the picker's header hints (tests)
   exit 0
 fi
 
-back=0
-[ "${1:-}" = '--back' ] && {
-  back=1
-  shift
-}
+[ "${1:-}" = '--back' ] && shift # legacy no-op: the exec-based toggle drops it
 
 dir="${1:-}"
 if [ -z "$dir" ]; then
@@ -185,15 +178,11 @@ if [ -z "$dir" ]; then
     exit 1
   fi
   dir="$(pick_dir)"
-  if [ "$dir" = "$ATTENTION_CANCEL" ]; then # cancel key: quit to the terminal
-    # re-emit when nested (--back) so the picker that called us quits too
-    [ "$back" -eq 1 ] && printf '%s' "$ATTENTION_CANCEL"
-    exit 0
-  fi
-  if [ -z "$dir" ]; then # esc: back to the session picker, or just exit
-    [ "$back" -eq 1 ] && exec "$PICKER" --from-dir
-    exit 0
-  fi
+  # the view key hands over to the session picker; esc/ctrl-c abort leaves dir
+  # empty and we exit. exec (not fzf `become`) keeps the picker at the top level
+  # so its attach has the terminal.
+  [ "$dir" = "$ATTENTION_TOGGLE" ] && exec "$PICKER" --from-dir
+  [ -n "$dir" ] || exit 0
 fi
 
 go_to_dir "$dir"

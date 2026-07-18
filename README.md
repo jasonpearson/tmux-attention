@@ -111,10 +111,8 @@ aggregate icon in a left gutter and a `▶` expansion indicator.
 - **K** — kill whatever the selected row is — session, window, or pane. It
   asks to confirm first (anything but `y` aborts), then refreshes the list.
 - **ctrl-n** — new session from a directory (below). The popup swaps to the
-  directory picker in place; **shift-tab** (or **esc**) brings you back to the
-  session list.
-- **ctrl-c** — quit the picker straight back to the terminal, unwinding the
-  directory round-trip in a single press (**esc** only steps back one level).
+  directory picker in place; **shift-tab** brings you back to the session list.
+- **ctrl-c** — quit the picker back to the terminal (**esc** does the same).
 
 Movement stays fzf's own — arrow keys, `ctrl-j`/`ctrl-k`, and `ctrl-p`. Only
 `ctrl-n` and `ctrl-c` are taken over (the new-session and quit keys above).

@@ -3,12 +3,13 @@
 
 TAB="$(printf '\t')"
 
-# Sentinel the pickers' cancel key emits (via fzf `become`) so a shell that
-# captured a picker's stdout can tell "user quit" from an empty selection. The
-# session<->directory toggle nests pickers via `become`, so each nested layer
-# re-emits it to unwind the whole stack back to the terminal in one keypress
+# Sentinel a picker's view/new key emits (via fzf `become`) so the shell that
+# captured the picker's stdout hands over to the other picker with `exec`. Using
+# exec (not a nested `become` inside the $() capture) keeps each picker at the
+# top level with the terminal on its std streams — so attach works from a bare
+# shell, and fzf's own abort (esc / ctrl-c) returns straight to the terminal
 # (see picker.sh / new-session.sh).
-ATTENTION_CANCEL='__tmux_attention_cancel__'
+ATTENTION_TOGGLE='__tmux_attention_toggle__'
 
 # Echo a global option's value, or the default when the option is unset.
 # An option explicitly set to "" is honored as-is (it disables an icon or a
