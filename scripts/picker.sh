@@ -11,11 +11,12 @@
 #   picker.sh                 interactive picker (popup, or a plain shell)
 #   picker.sh --list          print the rows (used by fzf reload)
 #   picker.sh --toggle <id>   expand/collapse the session owning <id>
-#   picker.sh --cycle-sort    advance the sort mode: attention -> name -> recent
+#   picker.sh --cycle-sort    flip the sort mode: attention <-> name
 #   picker.sh --cycle-view    flip the view: sessions <-> panes
 #   picker.sh --header        print the header line (used by fzf transform-header)
 #   picker.sh --kill <id>     kill session ($n), window (@n) or pane (%n)
-#   picker.sh --kill-confirm <id>   prompt on the tty, then --kill on y/Y
+#   picker.sh --kill-confirm <id>
+#                             prompt on the terminal, then --kill on y/Y
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh

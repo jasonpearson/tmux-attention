@@ -1,6 +1,6 @@
 # 🔥 tmux-attention
 
-Know which tmux sessions, windows, and panes needs you, at a glance.
+Know which tmux sessions, windows, and panes need you, at a glance.
 
 tmux-attention tracks the state of work running in panes across sessions — coding agents, builds, test suites, any CLI command — and surfaces icons in your tmux status bar when pane(s) are ready for your attention. The moment you look at a pane, its notification downgrades itself.
 
@@ -25,7 +25,7 @@ Each tmux pane in each tmux session has a single state:
 | `working` | actively running                      | ⚙️           | 5           |
 | `idle`    | finished/waiting and already seen     | (none)       | 6           |
 
-To customize icons, see [Configuration](#configuration).
+To customize icons, see [All tmux options](#all-tmux-options).
 
 ## Configuration
 
@@ -67,7 +67,9 @@ After adding [TPM](https://github.com/tmux-plugins/tpm) or [tpack](https://githu
 tmux-attention dependencies:
 
 - tmux ≥ 3.2
-- [fzf](https://github.com/junegunn/fzf) ≥ 0.40
+- [fzf](https://github.com/junegunn/fzf) ≥ 0.40 — ≥ 0.48 for the directory
+  picker's built-in walk, or set `@attention_picker_dir_command` to supply
+  the directories yourself
 
 ## At-a-glance status bar icons
 
@@ -77,7 +79,7 @@ tmux-attention dependencies:
 
 ![tmux status bar showing attention icons across windows and sessions](docs/status-bar.png)
 
-`prefix + a` open session picker/pane picker
+`prefix + a` opens the session/pane picker
 
 `prefix + A` fuzzy-finds a directory and takes you to a session for it: an existing session of that name if there is one, otherwise a new session rooted in the directory and named after its leaf (`~/code/api` → `api`). Press **shift-tab** to flip to the session picker and back — a round-trip on the view key — and **ctrl-c** to quit back to the terminal from either. (Opened on its own with `prefix + a`, the session picker's **shift-tab** toggles its sessions/panes view as usual.)
 
@@ -116,19 +118,19 @@ aggregate icon in a left gutter and a `▶` expansion indicator.
 
 Movement stays fzf's own — arrow keys, `ctrl-j`/`ctrl-k`, and `ctrl-p`. Only
 `ctrl-n` and `ctrl-c` are taken over (the new-session and quit keys above).
-Every key is rebindable — see [Configuration](#configuration).
+Every key is rebindable — see [All tmux options](#all-tmux-options).
 
 ## Integration with the shell
 
 Both pickers are also plain commands, so they can be aliased in your shell
-rc — and run bare on a terminal, `tmux-attention` *is* the picker. Inside
+rc — and run bare on a terminal, `tmux-attention` _is_ the picker. Inside
 tmux they switch the client; outside it they attach — which makes them a way
 _in_ to tmux, not just a way around it:
 
 ```sh
-alias tm='tmux-attention'         # the picker: a directory, or shift-tab for sessions
-alias tma='tmux-attention pick'   # straight to the session/window/pane list
-tmux-attention new ~/code/api     # skip the picker entirely
+alias tm='tmux-attention'              # the picker: a directory, or shift-tab for sessions
+alias tma='tmux-attention pick'        # straight to the session/window/pane list
+alias tmc='tmux-attention new "$PWD"'  # session for the current directory
 ```
 
 Bare is gated on an interactive terminal: run from a script or hook with no
@@ -244,11 +246,16 @@ set -g @attention_picker_view_key   'shift-tab' # picker: tree <-> panes; dir <-
 set -g @attention_picker_sort_key   'ctrl-s'
 set -g @attention_picker_cancel_key 'ctrl-c'    # quit the picker back to the terminal
 
-# where the directory picker looks (see "Directory picker")
+# where the directory picker (prefix + A) looks. fzf walks the tree itself,
+# so dir_root is the knob that matters most — a project root walks in well
+# under a second, a whole home directory takes a few. Names in dir_skip are
+# never descended into (single path components only); an empty list descends
+# into everything. Setting dir_command replaces the source entirely, and
+# root/hidden/skip stop applying — they configure a walk no longer happening.
 set -g @attention_picker_dir_root    "$HOME"
 set -g @attention_picker_dir_hidden  'on'     # descend into dotted directories
 set -g @attention_picker_dir_skip    '.git,node_modules,Library,.cache,.Trash,.local,.npm,.cargo,.rustup,.gradle,.m2,.venv,venv,__pycache__,target,dist,build,.next'
-set -g @attention_picker_dir_command ''       # set to replace the source entirely
+set -g @attention_picker_dir_command ''       # e.g. 'zoxide query --list'
 
 # picker view (sessions | panes) and sort mode (attention | name)
 # at server start, and the session expansion indicators

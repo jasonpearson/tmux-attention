@@ -5,10 +5,10 @@ Guidance for coding agents working in this repo.
 ## What this is
 
 A tmux plugin, pure bash, no runtime dependencies beyond tmux (≥ 3.2),
-fzf (≥ 0.40, session picker only), and optionally `column` (picker table
-alignment). It tracks the state of long-running work per pane in tmux
-pane user options and surfaces icons in the status bar plus an fzf
-session picker.
+fzf (≥ 0.40 for both pickers, ≥ 0.48 for the directory picker's built-in
+walk), and optionally `column` (picker table alignment). It tracks the
+state of long-running work per pane in tmux pane user options and
+surfaces icons in the status bar plus an fzf session picker.
 
 ## Layout
 
@@ -27,7 +27,7 @@ session picker.
 - `scripts/seen.sh` — focus-hook handler: focused panes in a notifying
   state (blocked/failed/done) downgrade to idle.
 - `scripts/picker.sh` — the fzf popup: sessions tree and flat panes
-  views, sorting, column alignment, jump/kill.
+  views, sorting, column alignment, jump, and the confirmed kill.
 - `scripts/new-session.sh` — directory picker → session named after the
   directory's leaf. The picker's new key *becomes* this script (fzf
   replaces itself, so the popup only changes contents); it is also bound
@@ -70,6 +70,13 @@ session picker.
   same walk from ~281k directories to ~29k (~14s to ~1.2s), most of it
   `Library`. `--walker-skip` matches a single path component;
   multi-component patterns need fzf 0.57.
+- **Killing is two subcommands on purpose**: `--kill` kills outright and
+  `--kill-confirm` prompts first, and the fzf bind uses `execute` rather
+  than `execute-silent` because only `execute` hands the child the
+  popup's terminal — which is what lets `read` see a keypress on fd 0.
+  Do not fold the prompt into `--kill`: the tests drive it directly with
+  no tty and would hang. The same fd-0 fact is what makes the confirm
+  testable, by piping `y`/`n` in.
 - **The picker header dims its first line with a raw ANSI escape**: fzf
   renders ANSI inside a `--header` as-is (`--ansi` is for list items, and
   is not needed). It is the only way to colour *one* header line —
@@ -129,7 +136,9 @@ session picker.
   suite creates its own throwaway server; tests that depend on activity
   timestamps need >1s spacing (second precision).
 - README.md is the only user documentation (there is no SPEC.md). Keep
-  these sections in sync with the code: the States table, Session
-  picker (keys, views, sort modes), the CLI reference, and the
-  Configuration block, which lists every option set to its real
-  default.
+  these sections in sync with the code: "Attention States" (the table's
+  icons and priorities), "Session/Pane picker" (keys, views, sort
+  modes), the CLI reference (mirrors `usage()` in bin/tmux-attention),
+  and "All tmux options", which must list every option set to its real
+  default. A new option means a line there and, if it changes a key or
+  a state, a mention in the prose above it.
