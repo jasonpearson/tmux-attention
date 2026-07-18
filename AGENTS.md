@@ -111,6 +111,17 @@ session picker.
   stay portable. `pick` and `new` are the deliberate exception: they are
   interactive, are meant to be aliased in a shell rc, and attach instead
   of switching the client when `$TMUX` is unset.
+- **No command is TTY-gated**: bare `tmux-attention` on an interactive
+  terminal execs the directory picker (the `new` screen), but prints
+  usage and exits 1 anywhere stdin/stdout is not a tty — so a script or
+  hook that invokes it bare never has its terminal grabbed.
+- The pickers hand off to each other with `exec` (a sentinel from fzf
+  `become`, turned into an exec by the main flow), never by `become`-ing
+  the other script. `become` would leave the second picker nested inside
+  the first's `$()` capture with piped std streams, and `tmux attach`
+  needs a real terminal ("open terminal failed: not a terminal"). Keeping
+  every picker at the top level is what makes attach work from a bare
+  shell — and lets fzf's own abort (esc/ctrl-c) exit straight out.
 
 ## Making changes
 

@@ -691,6 +691,13 @@ assert_eq 'outside tmux: run propagates exit code' "$?" 5
 "$BIN" bogus-command 2>/dev/null
 assert_eq 'unknown command errors' "$?" 1
 
+# bare CLI is TTY-gated: with stdout redirected (as here, and as in any script
+# or hook) it must print usage rather than exec the picker and grab the terminal
+"$BIN" >/dev/null 2>&1
+assert_eq 'no command without a tty exits 1' "$?" 1
+assert_contains 'no command without a tty prints usage' \
+  "$("$BIN" 2>&1 >/dev/null)" 'usage: tmux-attention'
+
 # --- summary -----------------------------------------------------------------
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

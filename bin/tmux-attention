@@ -7,7 +7,7 @@ source "$CURRENT_DIR/../scripts/helpers.sh"
 
 usage() {
   cat <<'EOF'
-usage: tmux-attention <command> [pane_id]
+usage: tmux-attention [command] [pane_id]
 
   working  [pane_id]   process started/resumed running
   blocked  [pane_id]   process needs input/approval (seen rule applies)
@@ -19,6 +19,8 @@ usage: tmux-attention <command> [pane_id]
   toggle   [pane_id]   flip pane between done and idle (manual marking)
   run [--] <command>   wrapper: working -> run command -> done/failed
 
+  (no command)         on a terminal: the picker, same as `new` (shift-tab
+                       toggles to the session list). Elsewhere: this usage.
   pick                 fuzzy-find a session/window/pane and go to it
   new [dir]            fuzzy-find a directory (or take one) and go to a
                        session for it, named after the directory
@@ -108,6 +110,14 @@ case "$cmd" in
     exit 0
     ;;
   '')
+    # No subcommand: on an interactive terminal this is the picker (the same
+    # screen as `new`; shift-tab toggles over to the session list). Anywhere
+    # else — a script or hook that ran us bare — print usage rather than grab
+    # the terminal. exec keeps it at the top level, which is what lets its
+    # attach find a terminal (see scripts/picker.sh).
+    if [ -t 0 ] && [ -t 1 ]; then
+      exec "$CURRENT_DIR/../scripts/new-session.sh"
+    fi
     usage >&2
     exit 1
     ;;

@@ -121,14 +121,18 @@ Every key is rebindable — see [Configuration](#configuration).
 ## Integration with the shell
 
 Both pickers are also plain commands, so they can be aliased in your shell
-rc. Inside tmux they switch the client; outside it they attach — which makes
-them a way _in_ to tmux, not just a way around it:
+rc — and run bare on a terminal, `tmux-attention` *is* the picker. Inside
+tmux they switch the client; outside it they attach — which makes them a way
+_in_ to tmux, not just a way around it:
 
 ```sh
-alias tma='tmux-attention pick'   # find a session/window/pane, go to it
-alias tmc='tmux-attention new'    # find a directory, get a session for it
-tmux-attention new ~/code/api     # or skip the picker entirely
+alias tm='tmux-attention'         # the picker: a directory, or shift-tab for sessions
+alias tma='tmux-attention pick'   # straight to the session/window/pane list
+tmux-attention new ~/code/api     # skip the picker entirely
 ```
+
+Bare is gated on an interactive terminal: run from a script or hook with no
+command, `tmux-attention` prints its usage instead of grabbing the terminal.
 
 ##### CLI reference
 
@@ -143,6 +147,7 @@ tmux-attention clear    [pane_id]   # remove tracking entirely
 tmux-attention toggle   [pane_id]   # flip pane between done and idle (manual marking)
 tmux-attention run [--] <command>   # wrapper: working → run command → done/failed
 
+tmux-attention                      # no command on a terminal: the picker (as `new`)
 tmux-attention pick                 # session picker: find a target, go to it
 tmux-attention new [dir]            # directory picker: get a session for a directory
 ```
