@@ -40,7 +40,7 @@ session picker.
 
 - One state per tracked pane, stored in pane user options
   `@attention_state` + `@attention_since`; untracked = options unset.
-  Priorities (lower = more urgent): blocked 1, failed 2, done 3,
+  Priorities (lower = more urgent): failed 1, blocked 2, done 3,
   unknown 4, working 5, idle 6, untracked 7. Aggregates (window,
   session, global) show the best-priority state; untracked panes never
   count.

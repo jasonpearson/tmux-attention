@@ -171,11 +171,11 @@ assert_eq 'unknown elsewhere aggregates as unknown' \
 assert_eq 'session icon for unknown' \
   "$(inside "$G1" bash "$ICON" session "$G_SID")" '❓ '
 
-# the aggregate spans every other session: blocked in gamma outranks
-# failed in alpha when viewed from beta
+# the aggregate spans every other session: failed in alpha outranks
+# blocked in gamma when viewed from beta
 T set -p -t "$G1" @attention_state blocked
 assert_eq 'global picks the highest priority across other sessions' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '🟠 '
+  "$(inside "$B1" bash "$ICON" global "$B_SID")" '☠️ '
 T set -p -t "$G1" @attention_state unknown
 
 # --- icon configurability ----------------------------------------------------
@@ -427,10 +427,16 @@ assert_contains 'panes view: single-pane session surfaces its pane title' \
 T select-pane -t "$B1" -T ''
 
 # no self-demotion: the pane you are in ranks by its own state like any other
-T set -p -t "$B1" @attention_state blocked
+# no self-demotion: the current pane sorts by its own state, not pushed down
+# for being the one you're in. failed is the top priority and gamma holds it
+# here, so step gamma down and give beta the top state — beta (the pane we're
+# inside) then leads. Restore gamma afterward so later tests are unaffected.
+T set -p -t "$G1" @attention_state done
+T set -p -t "$B1" @attention_state failed
 assert_eq 'panes view: current pane ranks by its own state' \
   "$(inside "$B1" bash "$PICKER" --list | cut -f1 | sed -n 1p)" "$B_WIN"
 T set -p -t "$B1" @attention_state idle
+T set -p -t "$G1" @attention_state failed
 
 # nothing expands in the flat view: alpha stays expanded, nothing collapses
 inside "$B1" bash "$PICKER" --toggle "$A2"

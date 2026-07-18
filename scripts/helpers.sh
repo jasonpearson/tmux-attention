@@ -19,8 +19,8 @@ attention_option() {
 # state among their member panes.
 state_priority() {
   case "$1" in
-    blocked) echo 1 ;;
-    failed)  echo 2 ;;
+    failed)  echo 1 ;;
+    blocked) echo 2 ;;
     done)    echo 3 ;;
     unknown) echo 4 ;;
     working) echo 5 ;;
