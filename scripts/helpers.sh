@@ -3,6 +3,13 @@
 
 TAB="$(printf '\t')"
 
+# Sentinel the pickers' cancel key emits (via fzf `become`) so a shell that
+# captured a picker's stdout can tell "user quit" from an empty selection. The
+# session<->directory toggle nests pickers via `become`, so each nested layer
+# re-emits it to unwind the whole stack back to the terminal in one keypress
+# (see picker.sh / new-session.sh).
+ATTENTION_CANCEL='__tmux_attention_cancel__'
+
 # Echo a global option's value, or the default when the option is unset.
 # An option explicitly set to "" is honored as-is (it disables an icon or a
 # key binding), which is why this checks set-ness rather than value emptiness.

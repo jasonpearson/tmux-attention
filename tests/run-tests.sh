@@ -339,6 +339,7 @@ assert_contains 'header shows the view key' "$header" 'shift-tab: view'
 assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
 assert_contains 'header shows the kill key' "$header" 'K: kill'
 assert_contains 'header shows the new key' "$header" 'ctrl-n: new'
+assert_contains 'header shows the cancel key' "$header" 'ctrl-c: quit'
 # line 1 is the keys, dimmed (fzf renders the ANSI as-is); line 2 is the
 # live view/sort state, in fzf's own header colour
 assert_contains 'header dims the hotkeys line' \
@@ -349,6 +350,17 @@ assert_eq 'sessions view: header ends in a blank spacer line' \
   "$(printf '%s' "$header" | sed -n 3p)" ' '
 assert_eq 'sessions view: header has no column-label line' \
   "$(printf '%s' "$header" | grep -c .)" 3
+
+# arriving from the directory picker (--from-dir) retargets the view key: it
+# round-trips back to directories instead of cycling sessions<->panes
+fromdir="$(inside "$B1" bash "$PICKER" --from-dir --header)"
+assert_contains 'from-dir header retargets the view key to directories' \
+  "$fromdir" 'shift-tab: directories'
+assert_eq 'from-dir header drops the sessions<->panes view hint' \
+  "$(printf '%s' "$fromdir" | grep -c 'shift-tab: view')" 0
+assert_eq 'from-dir is transparent to the list subcommand' \
+  "$(inside "$B1" bash "$PICKER" --from-dir --list)" \
+  "$(inside "$B1" bash "$PICKER" --list)"
 
 # expanding alpha (1 window, 2 panes) flattens to leaf rows: the panes
 # appear directly under the session, no row for the multi-pane window
@@ -638,6 +650,32 @@ T set -g @attention_picker_dir_root '~/code'
 assert_contains 'dir_root expands a literal ~' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" "--walker-root=$HOME/code"
 T set -gu @attention_picker_dir_root
+
+# --- directory picker: the view key toggles over to the session picker -------
+# The bind itself is an interactive become, but the header advertises it and is
+# built from the same shared @attention_picker_view_key the session picker uses.
+
+dhdr="$(inside "$B1" bash "$NEWSESSION" --header)"
+assert_contains 'dir picker header offers create/switch' \
+  "$dhdr" 'enter: create/switch'
+assert_contains 'dir picker header toggles to sessions on the view key' \
+  "$dhdr" 'shift-tab: sessions'
+assert_contains 'dir picker header shows the cancel key' \
+  "$dhdr" 'ctrl-c: quit'
+T set -g @attention_picker_view_key 'ctrl-t'
+assert_contains 'dir picker header honors a custom view key' \
+  "$(inside "$B1" bash "$NEWSESSION" --header)" 'ctrl-t: sessions'
+T set -g @attention_picker_view_key ''
+assert_eq 'dir picker header drops the toggle when the view key is disabled' \
+  "$(inside "$B1" bash "$NEWSESSION" --header | grep -c ': sessions')" 0
+T set -gu @attention_picker_view_key
+T set -g @attention_picker_cancel_key 'ctrl-g'
+assert_contains 'dir picker header honors a custom cancel key' \
+  "$(inside "$B1" bash "$NEWSESSION" --header)" 'ctrl-g: quit'
+T set -g @attention_picker_cancel_key ''
+assert_eq 'dir picker header drops the cancel hint when disabled' \
+  "$(inside "$B1" bash "$NEWSESSION" --header | grep -c ': quit')" 0
+T set -gu @attention_picker_cancel_key
 
 # --- outside tmux ------------------------------------------------------------
 

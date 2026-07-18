@@ -81,6 +81,22 @@ walker_args() {
   return 0
 }
 
+# The directory picker's header hints. The view key — shared with the session
+# picker, where it toggles sessions<->panes — switches over to the session
+# picker from here; esc cancels, or returns to the session picker when we
+# arrived from it (--back). The trailing blank line spaces the hints off the
+# list, as the session picker's header does.
+dir_header() {
+  local view_key cancel_key esc='cancel' hints
+  view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
+  cancel_key="$(attention_option '@attention_picker_cancel_key' 'ctrl-c')"
+  [ "${back:-0}" -eq 1 ] && esc='back'
+  hints='enter: create/switch'
+  [ -n "$view_key" ] && hints="$hints  |  $view_key: sessions"
+  [ -n "$cancel_key" ] && hints="$hints  |  $cancel_key: quit"
+  printf '%s  |  esc: %s\n ' "$hints" "$esc"
+}
+
 # The candidate directories. By default fzf walks the tree itself — no fd, no
 # find, no zoxide. @attention_picker_dir_root is the knob that matters most (a
 # project root walks in well under a second), and @attention_picker_dir_command
@@ -88,12 +104,17 @@ walker_args() {
 # directories you have actually visited), in which case root/skip/hidden no
 # longer apply — they configure a walk that is no longer happening.
 pick_dir() {
-  local cmd arg NL=$'\n'
+  local cmd arg view_key cancel_key
   cmd="$(attention_option '@attention_picker_dir_command' '')"
-  # the blank second line spaces the hints off the list, as the session
-  # picker's header does
-  local args=(--reverse --prompt 'new session > '
-    --header "enter: create/switch  |  esc: back${NL} ")
+  view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
+  cancel_key="$(attention_option '@attention_picker_cancel_key' 'ctrl-c')"
+  local args=(--reverse --prompt 'new session > ' --header "$(dir_header)")
+  # the view key jumps to the session picker — become: fzf replaces itself, so
+  # the popup just changes contents. --from-dir tells the picker to send the
+  # same key straight back here, so the two form one shift-tab round-trip.
+  [ -n "$view_key" ] && args+=(--bind "$view_key:become(\"$PICKER\" --from-dir)")
+  # cancel key: quit straight to the terminal, unwinding the whole become chain
+  [ -n "$cancel_key" ] && args+=(--bind "$cancel_key:become(printf %s $ATTENTION_CANCEL)")
   if [ -n "$cmd" ]; then
     sh -c "$cmd" 2>/dev/null | fzf "${args[@]}"
     return "$?"
@@ -146,6 +167,11 @@ if [ "${1:-}" = '--walker-args' ]; then # how the walk is configured (tests)
   exit 0
 fi
 
+if [ "${1:-}" = '--header' ]; then # the picker's header hints (tests)
+  dir_header
+  exit 0
+fi
+
 back=0
 [ "${1:-}" = '--back' ] && {
   back=1
@@ -159,8 +185,13 @@ if [ -z "$dir" ]; then
     exit 1
   fi
   dir="$(pick_dir)"
-  if [ -z "$dir" ]; then # cancelled, or the picker could not run
-    [ "$back" -eq 1 ] && exec "$PICKER"
+  if [ "$dir" = "$ATTENTION_CANCEL" ]; then # cancel key: quit to the terminal
+    # re-emit when nested (--back) so the picker that called us quits too
+    [ "$back" -eq 1 ] && printf '%s' "$ATTENTION_CANCEL"
+    exit 0
+  fi
+  if [ -z "$dir" ]; then # esc: back to the session picker, or just exit
+    [ "$back" -eq 1 ] && exec "$PICKER" --from-dir
     exit 0
   fi
 fi

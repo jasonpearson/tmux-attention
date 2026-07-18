@@ -79,7 +79,7 @@ tmux-attention dependencies:
 
 `prefix + a` open session picker/pane picker
 
-`prefix + A` fuzzy-finds a directory and takes you to a session for it: an existing session of that name if there is one, otherwise a new session rooted in the directory and named after its leaf (`~/code/api` → `api`).
+`prefix + A` fuzzy-finds a directory and takes you to a session for it: an existing session of that name if there is one, otherwise a new session rooted in the directory and named after its leaf (`~/code/api` → `api`). Press **shift-tab** to flip to the session picker and back — a round-trip on the view key — and **ctrl-c** to quit back to the terminal from either. (Opened on its own with `prefix + a`, the session picker's **shift-tab** toggles its sessions/panes view as usual.)
 
 `prefix + h` manually toggles the done attention state, which is useful for when you want to return to a pane.
 
@@ -111,11 +111,14 @@ aggregate icon in a left gutter and a `▶` expansion indicator.
 - **K** — kill whatever the selected row is — session, window, or pane. It
   asks to confirm first (anything but `y` aborts), then refreshes the list.
 - **ctrl-n** — new session from a directory (below). The popup swaps to the
-  directory picker in place; **esc** brings you back to the session list.
+  directory picker in place; **shift-tab** (or **esc**) brings you back to the
+  session list.
+- **ctrl-c** — quit the picker straight back to the terminal, unwinding the
+  directory round-trip in a single press (**esc** only steps back one level).
 
 Movement stays fzf's own — arrow keys, `ctrl-j`/`ctrl-k`, and `ctrl-p`. Only
-`ctrl-n` is taken over (for the new-session key above). Every key is
-rebindable — see [Configuration](#configuration).
+`ctrl-n` and `ctrl-c` are taken over (the new-session and quit keys above).
+Every key is rebindable — see [Configuration](#configuration).
 
 ## Integration with the shell
 
@@ -234,8 +237,9 @@ set -g @attention_new_key    'A'      # directory picker -> session
 set -g @attention_picker_kill_key   'K'      # kills the selected session/window/pane (confirms first)
 set -g @attention_picker_new_key    'ctrl-n' # swaps to the directory picker
 set -g @attention_picker_expand_key 'tab'
-set -g @attention_picker_view_key   'shift-tab' # sessions tree <-> flat panes view
+set -g @attention_picker_view_key   'shift-tab' # picker: tree <-> panes; dir <-> session round-trip
 set -g @attention_picker_sort_key   'ctrl-s'
+set -g @attention_picker_cancel_key 'ctrl-c'    # quit the picker back to the terminal
 
 # where the directory picker looks (see "Directory picker")
 set -g @attention_picker_dir_root    "$HOME"

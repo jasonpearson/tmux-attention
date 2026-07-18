@@ -146,6 +146,7 @@ picker_keys() {
   view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
   kill_key="$(attention_option '@attention_picker_kill_key' 'K')"
   new_key="$(attention_option '@attention_picker_new_key' 'ctrl-n')"
+  cancel_key="$(attention_option '@attention_picker_cancel_key' 'ctrl-c')"
 }
 
 # Two lines: what you can press, then what the list is currently showing.
@@ -159,10 +160,18 @@ header_text() {
   keys='enter: jump'
   # nothing expands in the flat panes view, so drop the hint there
   [ -n "$expand_key" ] && [ "$view" = sessions ] && keys="$keys  |  $expand_key: expand"
-  [ -n "$view_key" ] && keys="$keys  |  $view_key: view"
+  if [ -n "$view_key" ]; then
+    # reached from the directory picker, the view key round-trips back there
+    if [ "${FROM_DIR:-0}" -eq 1 ]; then
+      keys="$keys  |  $view_key: directories"
+    else
+      keys="$keys  |  $view_key: view"
+    fi
+  fi
   [ -n "$sort_key" ] && keys="$keys  |  $sort_key: sort"
   [ -n "$kill_key" ] && keys="$keys  |  $kill_key: kill"
   [ -n "$new_key" ] && keys="$keys  |  $new_key: new"
+  [ -n "$cancel_key" ] && keys="$keys  |  $cancel_key: quit"
   h="${DIM}${keys}${OFF}${NL}view: ${view}  |  sort: $(sort_mode)"
   # a blank spacer keeps the list from sitting flush against the hints;
   # the panes table also names its columns below it, sized by the same
@@ -424,6 +433,16 @@ kill_target() {
   esac
 }
 
+# Arrived from the directory picker (new-session.sh's view key): the view key
+# toggles back to it instead of cycling sessions<->panes, so the two pickers
+# form one shift-tab round-trip. Parsed before the case so fzf sub-invocations
+# (--header etc.) can carry it too.
+FROM_DIR=0
+if [ "${1:-}" = '--from-dir' ]; then
+  FROM_DIR=1
+  shift
+fi
+
 case "${1:-}" in
   --list)
     list_rows
@@ -573,17 +592,27 @@ fzf_args=(--reverse --delimiter "$TAB" --with-nth '2..' --header "$(header_text)
 if [ -n "$expand_key" ]; then
   fzf_args+=(--bind "$expand_key:execute-silent(\"$SELF\" --toggle {1})+reload(\"$SELF\" --list)")
 fi
+# The header re-render must carry --from-dir so its retargeted view-key hint
+# survives a sort/kill; the list/cycle subcommands don't depend on it.
+hdr_self="\"$SELF\" --header"
+[ "$FROM_DIR" -eq 1 ] && hdr_self="\"$SELF\" --from-dir --header"
 if [ -n "$sort_key" ]; then
-  fzf_args+=(--bind "$sort_key:execute-silent(\"$SELF\" --cycle-sort)+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
+  fzf_args+=(--bind "$sort_key:execute-silent(\"$SELF\" --cycle-sort)+reload(\"$SELF\" --list)+transform-header($hdr_self)")
 fi
 if [ -n "$view_key" ]; then
-  fzf_args+=(--bind "$view_key:execute-silent(\"$SELF\" --cycle-view)+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
+  if [ "$FROM_DIR" -eq 1 ]; then
+    # reached from the directory picker: the view key round-trips back to it
+    # rather than cycling sessions<->panes (become: the popup swaps in place)
+    fzf_args+=(--bind "$view_key:become(\"$NEW\" --back)")
+  else
+    fzf_args+=(--bind "$view_key:execute-silent(\"$SELF\" --cycle-view)+reload(\"$SELF\" --list)+transform-header($hdr_self)")
+  fi
 fi
 if [ -n "$kill_key" ]; then
   # execute, not execute-silent: --kill-confirm needs the popup's terminal to
   # prompt on. Killing a row can change the panes-table column widths, so the
   # header label line is re-derived along with the list.
-  fzf_args+=(--bind "$kill_key:execute(\"$SELF\" --kill-confirm {1})+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
+  fzf_args+=(--bind "$kill_key:execute(\"$SELF\" --kill-confirm {1})+reload(\"$SELF\" --list)+transform-header($hdr_self)")
 fi
 if [ -n "$new_key" ]; then
   # become, not execute: fzf replaces itself with the directory picker, so
@@ -591,7 +620,19 @@ if [ -n "$new_key" ]; then
   # sends a cancelled directory picker straight back here.
   fzf_args+=(--bind "$new_key:become(\"$NEW\" --back)")
 fi
+if [ -n "$cancel_key" ]; then
+  # quit straight to the terminal. become emits a sentinel the shell below
+  # recognizes; the toggle nests pickers via become, so each layer re-emits it
+  # (see below) to unwind the whole stack in one keypress instead of one level.
+  fzf_args+=(--bind "$cancel_key:become(printf %s $ATTENTION_CANCEL)")
+fi
 
 selection="$(list_rows | fzf "${fzf_args[@]}")" || exit 0
+if [ "$selection" = "$ATTENTION_CANCEL" ]; then
+  # re-emit when we are a nested layer (reached from the directory picker) so
+  # our caller quits too; the top-level picker just exits to the terminal.
+  [ "$FROM_DIR" -eq 1 ] && printf '%s' "$ATTENTION_CANCEL"
+  exit 0
+fi
 [ -n "$selection" ] || exit 0
 jump "${selection%%"$TAB"*}"
