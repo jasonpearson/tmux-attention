@@ -82,8 +82,9 @@ walker_args() {
 
 # The directory picker's header hints. The view key — shared with the session
 # picker, where it toggles sessions<->panes — switches over to the session
-# picker from here; esc/ctrl-c quit to the terminal. The trailing blank line
-# spaces the hints off the list, as the session picker's header does.
+# picker from here; the cancel key quits to the terminal. esc quits too (both
+# are fzf's own abort), but it does not get a second hint. The trailing blank
+# line spaces the hints off the list, as the session picker's header does.
 dir_header() {
   local view_key cancel_key hints
   view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
@@ -91,7 +92,7 @@ dir_header() {
   hints='enter: create/switch'
   [ -n "$view_key" ] && hints="$hints  |  $view_key: sessions"
   [ -n "$cancel_key" ] && hints="$hints  |  $cancel_key: quit"
-  printf '%s  |  esc: cancel\n ' "$hints"
+  printf '%s\n ' "$hints"
 }
 
 # The candidate directories. By default fzf walks the tree itself — no fd, no
