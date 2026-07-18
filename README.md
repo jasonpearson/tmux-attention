@@ -55,10 +55,11 @@ set -g status-left ' #{attention_global}[#S] '
 set -g status-style "bg=#{@base}"
 set -g window-status-format " #[fg=#{@subtle}]#[bg=#{@base}] #{attention_window}#I #W"
 set -g window-status-current-format ' #[fg=#{@accent}]#[bg=#{@base}]#{attention_window}#I #W'
-set -g pane-border-format '#{attention_pane}#{pane_title}'
+set -g pane-border-format '#{attention_pane}#{b:pane_current_path} #{pane_title}'
 set -g pane-border-status top
 
 run '~/.tmux/plugins/tpm/tpm'   # keep this last; tmux-attention after any theme
+
 ```
 
 After adding [TPM](https://github.com/tmux-plugins/tpm) or [tpack](https://github.com/tmuxpack/tpack) to `~/.tmux.conf`, open `tmux` and install with `prefix + I`.
@@ -107,16 +108,14 @@ aggregate icon in a left gutter and a `▶` expansion indicator.
   The chosen mode is remembered until the tmux server restarts; the picker
   itself always reopens fully collapsed.
 
-- **ctrl-k** — kill whatever the selected row is — session, window, or pane —
-  and refresh the list
+- **K** — kill whatever the selected row is — session, window, or pane. It
+  asks to confirm first (anything but `y` aborts), then refreshes the list.
 - **ctrl-n** — new session from a directory (below). The popup swaps to the
   directory picker in place; **esc** brings you back to the session list.
-- **ctrl-j** — vim binding move down.
-- **ctrl-k** — vim binding move up.
 
-Note that `ctrl-k` and `ctrl-n` take over fzf's own bindings for them (move
-up, move down): the arrow keys, `ctrl-p`, and `ctrl-j` still move. Every key
-is rebindable — see [Configuration](#configuration).
+Movement stays fzf's own — arrow keys, `ctrl-j`/`ctrl-k`, and `ctrl-p`. Only
+`ctrl-n` is taken over (for the new-session key above). Every key is
+rebindable — see [Configuration](#configuration).
 
 ## Integration with the shell
 
@@ -232,7 +231,7 @@ set -g @attention_picker_key 'a'
 set -g @attention_new_key    'A'      # directory picker -> session
 
 # keys inside the picker (fzf key names)
-set -g @attention_picker_kill_key   'ctrl-k' # kills the selected session/window/pane
+set -g @attention_picker_kill_key   'K'      # kills the selected session/window/pane (confirms first)
 set -g @attention_picker_new_key    'ctrl-n' # swaps to the directory picker
 set -g @attention_picker_expand_key 'tab'
 set -g @attention_picker_view_key   'shift-tab' # sessions tree <-> flat panes view

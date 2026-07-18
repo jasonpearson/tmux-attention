@@ -337,7 +337,7 @@ assert_contains 'header shows the sort mode' "$header" 'sort: attention'
 assert_contains 'header shows the expand key' "$header" 'tab: expand'
 assert_contains 'header shows the view key' "$header" 'shift-tab: view'
 assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
-assert_contains 'header shows the kill key' "$header" 'ctrl-k: kill'
+assert_contains 'header shows the kill key' "$header" 'K: kill'
 assert_contains 'header shows the new key' "$header" 'ctrl-n: new'
 # line 1 is the keys, dimmed (fzf renders the ANSI as-is); line 2 is the
 # live view/sort state, in fzf's own header colour
@@ -534,6 +534,22 @@ if T has-session -t gamma 2>/dev/null; then
   not_ok 'picker --kill kills the session' 'gamma alive' 'gamma killed'
 else
   ok 'picker --kill kills the session'
+fi
+
+# --kill-confirm reads one keypress from stdin (the popup's tty, live) before
+# killing: anything but y/Y spares the target, y/Y kills it.
+T new-session -d -s killme
+printf 'n' | inside "$B1" bash "$PICKER" --kill-confirm "$(T display-message -p -t killme: '#{session_id}')" >/dev/null
+if T has-session -t killme 2>/dev/null; then
+  ok 'kill-confirm: a non-y reply spares the target'
+else
+  not_ok 'kill-confirm: a non-y reply spares the target' 'killme gone' 'killme alive'
+fi
+printf 'y' | inside "$B1" bash "$PICKER" --kill-confirm "$(T display-message -p -t killme: '#{session_id}')" >/dev/null
+if T has-session -t killme 2>/dev/null; then
+  not_ok 'kill-confirm: y kills the target' 'killme alive' 'killme killed'
+else
+  ok 'kill-confirm: y kills the target'
 fi
 
 # --- new session from a directory --------------------------------------------

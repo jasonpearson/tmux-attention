@@ -3,9 +3,9 @@
 # in place into their windows and panes, each row with its attention icon.
 # A view toggle swaps the tree for a flat list of every pane on the server.
 # Enter jumps to the selected session, window, or pane; the (configurable)
-# kill key kills whatever the selected row is and reloads the list, and the
-# new key hands over to new-session.sh. Inside tmux enter switches the
-# client; run from a plain shell it attaches, so the picker doubles as a
+# kill key confirms and then kills whatever the selected row is, reloading the
+# list; the new key hands over to new-session.sh. Inside tmux enter switches
+# the client; run from a plain shell it attaches, so the picker doubles as a
 # standalone session-attach command.
 #
 #   picker.sh                 interactive picker (popup, or a plain shell)
@@ -15,6 +15,7 @@
 #   picker.sh --cycle-view    flip the view: sessions <-> panes
 #   picker.sh --header        print the header line (used by fzf transform-header)
 #   picker.sh --kill <id>     kill session ($n), window (@n) or pane (%n)
+#   picker.sh --kill-confirm <id>   prompt on the tty, then --kill on y/Y
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
@@ -143,7 +144,7 @@ picker_keys() {
   expand_key="$(attention_option '@attention_picker_expand_key' 'tab')"
   sort_key="$(attention_option '@attention_picker_sort_key' 'ctrl-s')"
   view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
-  kill_key="$(attention_option '@attention_picker_kill_key' 'ctrl-k')"
+  kill_key="$(attention_option '@attention_picker_kill_key' 'K')"
   new_key="$(attention_option '@attention_picker_new_key' 'ctrl-n')"
 }
 
@@ -414,6 +415,15 @@ list_rows() {
   fi
 }
 
+# Kill whatever an id points at: window (@n), pane (%n), or session ($n).
+kill_target() {
+  case "$1" in
+    '@'*) tmux kill-window -t "$1" 2>/dev/null ;;
+    '%'*) tmux kill-pane -t "$1" 2>/dev/null ;;
+    *) tmux kill-session -t "$1" 2>/dev/null ;;
+  esac
+}
+
 case "${1:-}" in
   --list)
     list_rows
@@ -470,10 +480,27 @@ case "${1:-}" in
   --kill)
     target="$(printf '%s' "${2:-}" | tr -d '[:space:]')"
     [ -n "$target" ] || exit 0
+    kill_target "$target"
+    exit 0
+    ;;
+  --kill-confirm)
+    # The interactive kill. Bound via fzf execute (not execute-silent), so we
+    # inherit the popup's terminal: prompt on it, read one keypress, and kill
+    # only on y/Y. Anything else — or an empty reply — aborts; the bind reloads
+    # the list either way. --kill stays the unconfirmed form for scripting.
+    target="$(printf '%s' "${2:-}" | tr -d '[:space:]')"
+    [ -n "$target" ] || exit 0
     case "$target" in
-      '@'*) tmux kill-window -t "$target" 2>/dev/null ;;
-      '%'*) tmux kill-pane -t "$target" 2>/dev/null ;;
-      *) tmux kill-session -t "$target" 2>/dev/null ;;
+      '@'*) noun=window  fmt='#{session_name}:#{window_index} #{window_name}' ;;
+      '%'*) noun=pane    fmt='#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}' ;;
+      *) noun=session fmt='#{session_name}' ;;
+    esac
+    label="$(tmux display-message -p -t "$target" "$fmt" 2>/dev/null)"
+    printf 'kill %s %s? [y/N] ' "$noun" "${label:-$target}"
+    read -r -n 1 reply
+    printf '\n'
+    case "$reply" in
+      y | Y) kill_target "$target" ;;
     esac
     exit 0
     ;;
@@ -553,9 +580,10 @@ if [ -n "$view_key" ]; then
   fzf_args+=(--bind "$view_key:execute-silent(\"$SELF\" --cycle-view)+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
 fi
 if [ -n "$kill_key" ]; then
-  # killing a row can change the panes-table column widths, so the header
-  # label line is re-derived along with the list
-  fzf_args+=(--bind "$kill_key:execute-silent(\"$SELF\" --kill {1})+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
+  # execute, not execute-silent: --kill-confirm needs the popup's terminal to
+  # prompt on. Killing a row can change the panes-table column widths, so the
+  # header label line is re-derived along with the list.
+  fzf_args+=(--bind "$kill_key:execute(\"$SELF\" --kill-confirm {1})+reload(\"$SELF\" --list)+transform-header(\"$SELF\" --header)")
 fi
 if [ -n "$new_key" ]; then
   # become, not execute: fzf replaces itself with the directory picker, so
