@@ -38,7 +38,7 @@ tmux-attention ships with the placeholders below. Add them to your `~/.tmux.conf
 | `#{attention_session}` | highest-priority state in the session              | session picker (built in); also usable in `status-left` |
 | `#{attention_global}`  | highest-priority state across all _other_ sessions | `status-left`                                           |
 
-The minimal `~/.tmux.conf` config below was used for screenshots in subsequent sections.
+The minimal `~/.tmux.conf` config below can be used to get started:
 
 ```tmux
 # ~/.tmux.conf
