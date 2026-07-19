@@ -73,10 +73,6 @@ tmux-attention dependencies:
 
 ## At-a-glance status bar icons
 
-<!-- Screenshot: a tmux status bar showing attention icons — e.g. 🟠 on one
-     window, 🔥 on another, ⚙️ in the window list — plus a summary icon in
-     status-left. Ideally across two or three sessions. -->
-
 ![tmux status bar showing attention icons across windows and sessions](docs/status-bar.png)
 
 `prefix + a` opens the session/pane picker
@@ -86,11 +82,6 @@ tmux-attention dependencies:
 `prefix + h` manually toggles the done attention state, which is useful for when you want to return to a pane.
 
 ## Session/Pane picker
-
-<!-- Screenshot: the fzf popup opened with `prefix + a`, listing sessions
-     with attention icons in the left gutter, one session expanded to show
-     its windows/panes, and the two-line header (dimmed hotkeys, then
-     view/sort state) visible. -->
 
 ![the session picker popup listing sessions with attention icons](docs/session-picker.png)
 
