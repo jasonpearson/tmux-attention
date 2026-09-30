@@ -10,6 +10,8 @@ PICKER="$DIR/scripts/picker.sh"
 NEWSESSION="$DIR/scripts/new-session.sh"
 SOCK="attention-test-$$"
 TEST_TMP="$(cd "$(mktemp -d)" && pwd -P)"
+# Tests must not inherit a user's picker preferences (e.g. from mise).
+while IFS= read -r name; do unset "$name"; done < <(compgen -v TMUX_ATTENTION_)
 
 T() { command tmux -L "$SOCK" "$@"; }
 
@@ -80,10 +82,11 @@ inside() {
 before_status="$(T show-options -gqv status-left)"
 before_keys="$(T list-keys -T prefix)"
 inside "$A1" "$BIN" --help >/dev/null
+inside "$A1" "$BIN" --version >/dev/null
 env -u TMUX -u TMUX_PANE "$BIN" working
-assert_eq 'help and outside state no-ops do not install hooks' \
+assert_eq 'help/version and outside state no-ops do not install hooks' \
   "$(T show-hooks -g | grep -c 'seen\.sh')" 0
-assert_eq 'help and outside state no-ops do not install formats' \
+assert_eq 'help/version and outside state no-ops do not install formats' \
   "$(T show-options -gqv @attention_formats_version)" ''
 # Other plugins can occupy any slot; even our preferred index is not reserved.
 T set-hook -g 'after-select-pane[4242]' 'set-option -g @other_hook fired'
@@ -358,10 +361,10 @@ header="$(inside "$B1" bash "$PICKER" --header)"
 assert_contains 'header shows the view mode' "$header" 'view: sessions'
 assert_contains 'header shows the sort mode' "$header" 'sort: attention'
 assert_contains 'header shows the expand key' "$header" 'tab: expand'
-assert_contains 'header shows the view key' "$header" 'shift-tab: view'
+assert_contains 'header shows the next view' "$header" 'shift-tab: panes'
 assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
 assert_contains 'header shows the kill key' "$header" 'K: kill'
-assert_contains 'header shows the new key' "$header" 'ctrl-n: new'
+assert_eq 'header has no duplicate new key' "$(printf '%s' "$header" | grep -c 'ctrl-n:')" 0
 assert_contains 'header shows the cancel key' "$header" 'ctrl-c: quit'
 # line 1 is the keys, dimmed (fzf renders the ANSI as-is); line 2 is the
 # live view/sort state, in fzf's own header colour
@@ -374,16 +377,47 @@ assert_eq 'sessions view: header ends in a blank spacer line' \
 assert_eq 'sessions view: header has no column-label line' \
   "$(printf '%s' "$header" | grep -c .)" 3
 
-# arriving from the directory picker (--from-dir) retargets the view key: it
-# round-trips back to directories instead of cycling sessions<->panes
-fromdir="$(inside "$B1" bash "$PICKER" --from-dir --header)"
-assert_contains 'from-dir header retargets the view key to directories' \
-  "$fromdir" 'shift-tab: directories'
-assert_eq 'from-dir header drops the sessions<->panes view hint' \
-  "$(printf '%s' "$fromdir" | grep -c 'shift-tab: view')" 0
-assert_eq 'from-dir is transparent to the list subcommand' \
-  "$(inside "$B1" bash "$PICKER" --from-dir --list)" \
-  "$(inside "$B1" bash "$PICKER" --list)"
+# Startup view is local, ignoring any stale pre-consolidation preference.
+T set -g @attention_picker_view panes
+assert_contains 'persisted view is ignored' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'view: sessions'
+T set -gu @attention_picker_view
+assert_contains 'panes cycles to directories' \
+  "$(inside "$B1" bash "$PICKER" --panes --header)" 'shift-tab: directories'
+export TMUX_ATTENTION_PICKER_VIEW_KEY=''
+assert_eq 'empty environment view key disables hint' \
+  "$(inside "$B1" bash "$PICKER" --header | grep -c 'shift-tab:')" 0
+unset TMUX_ATTENTION_PICKER_VIEW_KEY
+T set -gu @attention_picker_sort
+export TMUX_ATTENTION_PICKER_SORT=name
+assert_contains 'environment supplies initial sort' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'sort: name'
+export TMUX_ATTENTION_PICKER_SORT=''
+assert_contains 'empty initial sort falls back to attention' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'sort: attention'
+unset TMUX_ATTENTION_PICKER_SORT
+T set -g @attention_picker_sort attention
+
+# Preferences come only from the process environment, including explicit empty.
+T set -g @attention_picker_expand_key ignored
+assert_contains 'legacy tmux key option is ignored' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'tab: expand'
+T set -gu @attention_picker_expand_key
+for pref in EXPAND SORT KILL CANCEL; do
+  export "TMUX_ATTENTION_PICKER_${pref}_KEY=ctrl-x"
+  assert_contains "$pref key honors environment" \
+    "$(inside "$B1" bash "$PICKER" --header)" 'ctrl-x:'
+  export "TMUX_ATTENTION_PICKER_${pref}_KEY="
+  case "$pref" in
+    EXPAND) hint=': expand' ;;
+    SORT) hint=': sort' ;;
+    KILL) hint=': kill' ;;
+    CANCEL) hint=': quit' ;;
+  esac
+  assert_eq "$pref key honors explicit empty" \
+    "$(inside "$B1" bash "$PICKER" --header | head -1 | grep -c "$hint")" 0
+  unset "TMUX_ATTENTION_PICKER_${pref}_KEY"
+done
 
 # expanding alpha (1 window, 2 panes) flattens to leaf rows: the panes
 # appear directly under the session, no row for the multi-pane window
@@ -415,21 +449,20 @@ assert_eq 'title equal to the pane path suppressed' \
 # gamma=failed, A1=unknown, A2=working, beta=idle. Single-pane windows keep
 # their window id and w:name label; panes of multi-pane windows their pane
 # id and w.p label.
-T set -g @attention_picker_view panes
 expected="$G_WIN
 $A1
 $A2
 $B_WIN"
 assert_eq 'panes view: one row per pane, attention order' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1)" "$expected"
 # column padding varies with field widths, so squeeze space runs before
 # matching; the fields themselves must still appear in order
 assert_contains 'panes view: pane rows carry session name and w.p label' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${A1}$(printf '\t')" | tr -s ' ')" 'alpha 0.0'
+  "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${A1}$(printf '\t')" | tr -s ' ')" 'alpha 0.0'
 assert_contains 'panes view: single-pane window rows keep the window name' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | tr -s ' ')" 'beta 0:'
+  "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${B_WIN}$(printf '\t')" | tr -s ' ')" 'beta 0:'
 assert_contains 'panes view: informative pane title still appended' \
-  "$(inside "$B1" bash "$PICKER" --list)" '— writing tests'
+  "$(inside "$B1" bash "$PICKER" --panes --list)" '— writing tests'
 
 # rows are "id TAB icon TAB text" — the icon rides its own tab-terminated
 # field for fzf's --tabstop gutter, while the text fields are padded into
@@ -439,17 +472,17 @@ assert_contains 'panes view: informative pane title still appended' \
 # offsets via awk index safe to compare).
 if command -v column >/dev/null 2>&1; then
   assert_eq 'panes view: fields padded into aligned columns' \
-    "$(inside "$B1" bash "$PICKER" --list | grep -Ec 'beta {2,}0:')" 1
+    "$(inside "$B1" bash "$PICKER" --panes --list | grep -Ec 'beta {2,}0:')" 1
   assert_eq 'panes view: icons ride their own tab-stopped field' \
-    "$(inside "$B1" bash "$PICKER" --list | grep -F "${G_WIN}$(printf '\t')" | cut -f2)" '☠️'
+    "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${G_WIN}$(printf '\t')" | cut -f2)" '☠️'
   assert_eq 'panes view: iconless rows carry an empty icon field' \
-    "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f2)" ''
+    "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${B_WIN}$(printf '\t')" | cut -f2)" ''
   assert_eq 'panes view: blank spacer between the hints and the labels' \
-    "$(inside "$B1" bash "$PICKER" --header | sed -n 3p)" ''
-  labels="$(inside "$B1" bash "$PICKER" --header | sed -n 4p)"
+    "$(inside "$B1" bash "$PICKER" --panes --header | sed -n 3p)" ''
+  labels="$(inside "$B1" bash "$PICKER" --panes --header | sed -n 4p)"
   assert_contains 'panes view: header carries the column labels' \
     "$(printf '%s' "$labels" | tr -s ' ')" 'session pane command path title'
-  beta_text="$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f3)"
+  beta_text="$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${B_WIN}$(printf '\t')" | cut -f3)"
   assert_eq 'panes view: header labels line up with the columns' \
     "$(awk -v s="$labels" 'BEGIN { sub(/^ */, "", s); print index(s, "pane") }')" \
     "$(awk -v s="$beta_text" 'BEGIN { print index(s, "0:") }')"
@@ -458,7 +491,7 @@ fi
 # beta is not expandable in the tree, so its pane's title surfaces only here
 T select-pane -t "$B1" -T 'triage me'
 assert_contains 'panes view: single-pane session surfaces its pane title' \
-  "$(inside "$B1" bash "$PICKER" --list)" '— triage me'
+  "$(inside "$B1" bash "$PICKER" --panes --list)" '— triage me'
 T select-pane -t "$B1" -T ''
 
 # no self-demotion: the pane you are in ranks by its own state like any other
@@ -469,16 +502,16 @@ T select-pane -t "$B1" -T ''
 T set -p -t "$G1" @attention_state done
 T set -p -t "$B1" @attention_state failed
 assert_eq 'panes view: current pane ranks by its own state' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | sed -n 1p)" "$B_WIN"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1 | sed -n 1p)" "$B_WIN"
 T set -p -t "$B1" @attention_state idle
 T set -p -t "$G1" @attention_state failed
 
 # nothing expands in the flat view: alpha stays expanded, nothing collapses
-inside "$B1" bash "$PICKER" --toggle "$A2"
+inside "$B1" bash "$PICKER" --panes --toggle "$A2"
 assert_eq 'panes view: expand toggle is a no-op' \
   "$(T show-options -gqv @attention_picker_expanded)" "$A_SID"
 
-header="$(inside "$B1" bash "$PICKER" --header)"
+header="$(inside "$B1" bash "$PICKER" --panes --header)"
 assert_contains 'panes view: header shows the view mode' "$header" 'view: panes'
 assert_eq 'panes view: header omits the expand key' \
   "$(printf '%s' "$header" | grep -c 'tab: expand')" 0
@@ -489,7 +522,7 @@ $A2
 $B_WIN
 $G_WIN"
 assert_eq 'panes view: name order groups panes by session' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1)" "$expected"
 T set -g @attention_picker_sort attention
 
 # attention ties break by recency here too: all idle, the panes of the
@@ -502,19 +535,16 @@ $A2
 $G_WIN
 $B_WIN"
 assert_eq 'panes view: attention ties break by recency' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1)" "$expected"
 T set -p -t "$A1" @attention_state unknown
 T set -p -t "$A2" @attention_state working
 T set -p -t "$G1" @attention_state failed
 
-# the view flips between the two modes and persists in the global option
-inside "$B1" bash "$PICKER" --cycle-view
-assert_eq 'cycle-view: panes -> sessions' \
-  "$(T show-options -gqv @attention_picker_view)" sessions
-inside "$B1" bash "$PICKER" --cycle-view
-assert_eq 'cycle-view: sessions -> panes' \
-  "$(T show-options -gqv @attention_picker_view)" panes
-T set -gu @attention_picker_view
+# A panes invocation does not alter the next navigator's startup view.
+assert_contains 'new invocation starts in sessions after panes' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'view: sessions'
+assert_eq 'view never persists a server option' \
+  "$(T show-options -gqv @attention_picker_view)" ''
 
 # beta holds a single pane: session, window, and pane rows would all jump
 # to the same place, so it is not expandable and toggling it is a no-op
@@ -543,7 +573,7 @@ case "$PWD" in
   *) SHORT_PWD="$PWD" ;;
 esac
 assert_contains 'window leaf shows its pane command and path' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')")" "zsh $SHORT_PWD"
+  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')")" "$(T display-message -p -t "$B1" '#{pane_current_command}') $SHORT_PWD"
 
 # toggling from a child row collapses the owning session
 inside "$B1" bash "$PICKER" --toggle "$A1"
@@ -628,13 +658,38 @@ assert_eq 'new-session on a missing directory creates nothing' \
   "$(T list-sessions -F '#{session_name}' | grep -c .)" "$sessions_before"
 
 # the CLI delegates: this is the entry point a shell alias would use
-inside "$B1" "$BIN" new "$TMPROOT/cli"
-assert_eq 'tmux-attention new rejects a missing directory' \
+inside "$B1" "$BIN" "$TMPROOT/cli"
+assert_eq 'tmux-attention DIR rejects a missing directory' \
   "$(T has-session -t '=cli' 2>/dev/null && echo yes)" ''
 mkdir -p "$TMPROOT/cli"
-inside "$B1" "$BIN" new "$TMPROOT/cli"
-assert_eq 'tmux-attention new creates the session' \
+inside "$B1" "$BIN" "$TMPROOT/cli"
+assert_eq 'tmux-attention DIR creates the session' \
   "$(T has-session -t '=cli' 2>/dev/null && echo yes)" yes
+
+mkdir -p "$TMPROOT/space name/child" "$TMPROOT/other/proj"
+(cd "$TMPROOT/space name" && inside "$B1" "$BIN" .)
+assert_eq 'dot resolves to the actual directory leaf including spaces' \
+  "$(T list-panes -t '=space name' -F '#{pane_current_path}' | sed -n 1p)" "$TMPROOT/space name"
+(cd "$TMPROOT/space name/child" && inside "$B1" "$BIN" ../)
+assert_eq 'parent and trailing slash reuse the canonical session' \
+  "$(T list-sessions -F '#{session_name}' | grep -Fxc 'space name')" 1
+inside "$B1" "$BIN" -- "$TMPROOT/other/proj/"
+assert_eq 'same leaf in another directory reuses existing session' \
+  "$(T list-panes -t '=proj' -F '#{pane_current_path}' | sed -n 1p)" "$TMPROOT/proj"
+inside "$B1" "$BIN" /
+assert_eq 'root directory uses root session name' \
+  "$(T list-panes -t '=root' -F '#{pane_current_path}' | sed -n 1p)" /
+
+# `cd -- -` still means OLDPWD; the public CLI must treat it as ./- instead.
+mkdir -p "$TMPROOT/-" "$TMPROOT/oldpwd"
+(cd "$TMPROOT" && inside "$B1" env OLDPWD="$TMPROOT/oldpwd" "$BIN" -- -)
+assert_eq 'literal dash directory invocation succeeds' "$?" 0
+assert_eq 'literal dash directory creates a dash-named session' \
+  "$(T has-session -t '=-' 2>/dev/null && echo yes)" yes
+assert_eq 'literal dash directory roots the session in ./-' \
+  "$(T list-panes -t '=-' -F '#{pane_current_path}' 2>/dev/null | sed -n 1p)" "$TMPROOT/-"
+assert_eq 'literal dash directory switches to the dash-named session' \
+  "$(T list-clients -F '#{session_name}')" '-'
 
 rm -rf "$TMPROOT"
 
@@ -649,34 +704,36 @@ assert_eq 'walk never follows symlinks' \
   "$(printf '%s' "$wargs" | grep -c follow)" 0
 assert_contains 'walk starts at $HOME by default' "$wargs" "--walker-root=$HOME"
 
-T set -g @attention_picker_dir_hidden off
+export TMUX_ATTENTION_DIR_HIDDEN=off
 assert_contains 'dir_hidden off drops hidden directories' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker=dir'
 assert_eq 'dir_hidden off leaves no hidden flag' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c hidden)" 0
-T set -g @attention_picker_dir_hidden on
+export TMUX_ATTENTION_DIR_HIDDEN=on
 assert_contains 'dir_hidden on restores them' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker=dir,hidden'
-T set -gu @attention_picker_dir_hidden
+unset TMUX_ATTENTION_DIR_HIDDEN
 
-T set -g @attention_picker_dir_skip 'foo,bar'
+export TMUX_ATTENTION_DIR_SKIP='foo,bar'
 assert_contains 'dir_skip replaces the skip list' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker-skip=foo,bar'
-# an empty skip list is "descend into everything", not an empty argument
-T set -g @attention_picker_dir_skip ''
-assert_eq 'an empty dir_skip drops the flag' \
-  "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c walker-skip)" 0
-T set -gu @attention_picker_dir_skip
+# An explicit empty flag overrides fzf's own .git,node_modules skip default.
+export TMUX_ATTENTION_DIR_SKIP=''
+assert_eq 'an empty dir_skip overrides the fzf default' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c '^--walker-skip=$')" 1
+unset TMUX_ATTENTION_DIR_SKIP
 
 # tmux expands ~ in a double-quoted option value but not a single-quoted one
-T set -g @attention_picker_dir_root '~/code'
+export TMUX_ATTENTION_DIR_ROOT='~/code'
 assert_contains 'dir_root expands a literal ~' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" "--walker-root=$HOME/code"
-T set -gu @attention_picker_dir_root
+export TMUX_ATTENTION_DIR_ROOT=''
+assert_contains 'explicit empty root is preserved' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker-root='
+unset TMUX_ATTENTION_DIR_ROOT
 
-# --- directory picker: the view key toggles over to the session picker -------
-# The bind itself is an interactive become, but the header advertises it and is
-# built from the same shared @attention_picker_view_key the session picker uses.
+# --- directory picker: the view key cycles over to the session picker --------
+# The header shares the session picker's environment-only view key.
 
 dhdr="$(inside "$B1" bash "$NEWSESSION" --header)"
 assert_contains 'dir picker header offers create/switch' \
@@ -685,20 +742,33 @@ assert_contains 'dir picker header toggles to sessions on the view key' \
   "$dhdr" 'shift-tab: sessions'
 assert_contains 'dir picker header shows the cancel key' \
   "$dhdr" 'ctrl-c: quit'
-T set -g @attention_picker_view_key 'ctrl-t'
+export TMUX_ATTENTION_PICKER_VIEW_KEY=ctrl-t
 assert_contains 'dir picker header honors a custom view key' \
   "$(inside "$B1" bash "$NEWSESSION" --header)" 'ctrl-t: sessions'
-T set -g @attention_picker_view_key ''
+export TMUX_ATTENTION_PICKER_VIEW_KEY=''
 assert_eq 'dir picker header drops the toggle when the view key is disabled' \
   "$(inside "$B1" bash "$NEWSESSION" --header | grep -c ': sessions')" 0
-T set -gu @attention_picker_view_key
-T set -g @attention_picker_cancel_key 'ctrl-g'
+unset TMUX_ATTENTION_PICKER_VIEW_KEY
+export TMUX_ATTENTION_PICKER_CANCEL_KEY=ctrl-g
 assert_contains 'dir picker header honors a custom cancel key' \
   "$(inside "$B1" bash "$NEWSESSION" --header)" 'ctrl-g: quit'
-T set -g @attention_picker_cancel_key ''
+export TMUX_ATTENTION_PICKER_CANCEL_KEY=''
 assert_eq 'dir picker header drops the cancel hint when disabled' \
   "$(inside "$B1" bash "$NEWSESSION" --header | grep -c ': quit')" 0
-T set -gu @attention_picker_cancel_key
+unset TMUX_ATTENTION_PICKER_CANCEL_KEY
+
+# Diagnostics on a nonexistent socket remain headless and never start a server.
+COLD_SOCKET="${SOCKET_PATH}-cold"
+assert_eq 'cold sessions diagnostic is empty' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --sessions --list)" ''
+assert_eq 'cold panes diagnostic is empty' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --panes --list)" ''
+assert_contains 'cold sessions still advertises panes' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --sessions --header)" 'shift-tab: panes'
+assert_contains 'cold panes still advertises directories' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --panes --header)" 'shift-tab: directories'
+assert_eq 'cold diagnostics leave server absent' \
+  "$(command tmux -S "$COLD_SOCKET" list-sessions 2>/dev/null && echo running)" ''
 
 # --- outside tmux ------------------------------------------------------------
 
@@ -723,6 +793,11 @@ assert_contains 'no command without a tty prints usage' \
 
 # Additional acceptance cases share the isolated server and assertions above.
 source "$DIR/tests/cli-tests.sh"
+if bash "$DIR/tests/terminal-tests.sh"; then
+  ok 'real-terminal navigation and attach/switch'
+else
+  not_ok 'real-terminal navigation and attach/switch' failed passed
+fi
 
 # --- summary -----------------------------------------------------------------
 

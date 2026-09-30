@@ -12,7 +12,7 @@ native_format_tests() {
   local p1 p2 p3 observer third session="native-formats-$$"
   local elsewhere="native-observer-$$" extra="native-extra-$$"
   local now since timeout stamp before after rendered sample attempt matched
-  local control_pid client n old_bin old_error old_rc
+  local control_pid client n navigation_dir old_bin old_error old_rc
 
   # Keep absent and explicitly empty options distinct, including internal
   # templates which registration tests deliberately remove and regenerate.
@@ -77,7 +77,11 @@ native_format_tests() {
   }
 
   inside "$p1" "$BIN" --help >/dev/null
-  assert_eq 'native help does not register formats' \
+  inside "$p1" "$BIN" --version >/dev/null
+  assert_eq 'native help/version do not register formats' \
+    "$(T show-options -gq @attention_formats_version)" ''
+  inside "$p1" "$BIN" working one two >/dev/null 2>&1
+  assert_eq 'native invalid state invocation does not register formats' \
     "$(T show-options -gq @attention_formats_version)" ''
 
   # Report the server version, not the installed client version. Only this
@@ -255,6 +259,13 @@ native_format_tests() {
       "$(native_test_icon global "$p1")" '⚙️ '
     assert_eq 'native global still includes other sessions with an attached client' \
       "$(native_test_icon global "$observer")" '☠️ '
+    # Direct directory navigation must register formats without an init command.
+    navigation_dir="$TEST_TMP/$elsewhere"
+    mkdir -p "$navigation_dir"
+    native_test_reset_formats
+    inside "$observer" "$BIN" "$navigation_dir"
+    assert_eq 'native valid directory navigation registers all four templates' \
+      "$(T show-options -g | grep -Ec '^@attention_(pane|window|session|global) ')" 4
     T detach-client -t "$client"
   fi
   exec 8>&-

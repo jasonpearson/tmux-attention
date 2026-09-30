@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
-# tmux-attention: record the state of long-running work in a tmux pane.
-
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# One navigator and pane-state CLI. Supporting files stay beside the installed
+# bin/ directory; follow executable symlinks without GNU readlink -f (macOS).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  BASE="$(CDPATH= cd -P "$(dirname "$SOURCE")" && pwd)" || exit 1
+  SOURCE="$(readlink "$SOURCE")" || exit 1
+  case "$SOURCE" in /*) ;; *) SOURCE="$BASE/$SOURCE" ;; esac
+done
+CURRENT_DIR="$(CDPATH= cd -P "$(dirname "$SOURCE")/.." && pwd)" || exit 1
 # shellcheck source=../scripts/helpers.sh
-source "$CURRENT_DIR/../scripts/helpers.sh"
+source "$CURRENT_DIR/scripts/helpers.sh"
 
 usage() {
   cat <<'EOF'
-usage: tmux-attention [command] [pane_id]
+usage: tmux-attention [directory]
+       tmux-attention <state|clear|toggle> [pane_id]
+       tmux-attention run [--] <command> [args...]
+
+  (no arguments)      navigate sessions, panes and directories on a terminal
+  directory           create/reuse its session; use . for the current directory
+  -- directory        treat a reserved name (such as run) as a directory
 
   working  [pane_id]   process started/resumed running
   blocked  [pane_id]   process needs input/approval (seen rule applies)
@@ -15,50 +27,61 @@ usage: tmux-attention [command] [pane_id]
   done     [pane_id]   process finished (seen rule applies)
   idle     [pane_id]   process quiesced and nothing is pending
   unknown  [pane_id]   integration cannot classify the state
-  clear    [pane_id]   remove tracking entirely (pane becomes untracked)
-  toggle   [pane_id]   flip pane between done and idle (manual marking)
-  run [--] <command>   wrapper: working -> run command -> done/failed
+  clear    [pane_id]   remove tracking entirely
+  toggle   [pane_id]   manually mark/unmark, bypassing the seen rule
+  run [--] <command>   working -> run command -> done/failed
+  -h, --help          show this help
+  --version           show the installed version
 
-  (no command)         on a terminal: the picker, same as `new` (shift-tab
-                       toggles to the session list). Elsewhere: this usage.
-  pick                 fuzzy-find a session/window/pane and go to it
-  new [dir]            fuzzy-find a directory (or take one) and go to a
-                       session for it, named after the directory
+Navigation switches the client inside tmux and attaches outside it. With no
+sessions, the navigator starts with directories; otherwise it starts with
+sessions. Shift-tab cycles sessions -> panes -> directories -> sessions.
+Bare invocation without a terminal prints usage and exits 1.
 
-pane_id defaults to $TMUX_PANE. Outside tmux every state command exits 0
-silently (run still executes its command and propagates its exit code).
-pick and new are interactive and always do something: inside tmux they
-switch the client, outside it they attach.
+pane_id defaults to $TMUX_PANE. Outside tmux state commands are silent no-ops;
+run still executes its command and preserves its exit code. Seen-rule hooks and
+native icon formats initialize automatically. Use #{T:@attention_session} (or
+pane/window/global) in your tmux theme; @attention_icon_<state> overrides an icon.
+No setup command is needed. Key bindings are configured directly in tmux.conf.
 EOF
 }
 
-# Record a notifying state (blocked/failed/done), applying the seen rule
-# and the blocked guard.
+usage_error() {
+  printf 'tmux-attention: %s\n' "$1" >&2
+  usage >&2
+  exit 1
+}
+
+# A notifying state applies the seen rule and preserves unanswered blocked.
 record() {
   local pane="$1" state="$2"
   if pane_focused "$pane"; then
-    # The user is already looking at this pane; nothing to notify.
     set_pane_state "$pane" idle
     return 0
   fi
   if [ "$(pane_state "$pane")" = blocked ]; then
-    # An unanswered prompt is still the more urgent fact.
     case "$state" in done | failed) return 0 ;; esac
   fi
   set_pane_state "$pane" "$state"
 }
 
 cmd="${1:-}"
-
 case "$cmd" in
+  -h | --help)
+    [ "$#" -eq 1 ] || usage_error '--help takes no arguments'
+    usage
+    exit 0
+    ;;
+  --version)
+    [ "$#" -eq 1 ] || usage_error '--version takes no arguments'
+    IFS= read -r version < "$CURRENT_DIR/VERSION" || exit 1
+    printf 'tmux-attention %s\n' "$version"
+    exit 0
+    ;;
   run)
     shift
     [ "${1:-}" = '--' ] && shift
-    if [ "$#" -eq 0 ]; then
-      echo 'tmux-attention: run requires a command' >&2
-      usage >&2
-      exit 1
-    fi
+    [ "$#" -gt 0 ] || usage_error 'run requires a command'
     pane="${TMUX_PANE:-}"
     if [ -z "${TMUX:-}" ] || [ -z "$pane" ] ||
       ! tmux display-message -p -t "$pane" '' >/dev/null 2>&1; then
@@ -70,26 +93,21 @@ case "$cmd" in
     set_pane_state "$pane" working
     "$@"
     rc="$?"
-    if [ "$rc" -eq 0 ]; then
-      record "$pane" done
-    else
-      record "$pane" failed
-    fi
+    if [ "$rc" -eq 0 ]; then record "$pane" done; else record "$pane" failed; fi
     exit "$rc"
     ;;
   working | blocked | failed | done | idle | unknown | clear | toggle)
+    [ "$#" -le 2 ] || usage_error "$cmd accepts at most one pane_id"
     [ -n "${TMUX:-}" ] || exit 0
     pane="${2:-${TMUX_PANE:-}}"
     [ -n "$pane" ] || exit 0
-    tmux display-message -p -t "$pane" '' >/dev/null 2>&1 || exit 0 # dead pane
+    tmux display-message -p -t "$pane" '' >/dev/null 2>&1 || exit 0
     ensure_server_hooks || exit 1
     case "$cmd" in
       working | idle | unknown) set_pane_state "$pane" "$cmd" ;;
       blocked | failed | done) record "$pane" "$cmd" ;;
       clear) clear_pane_state "$pane" ;;
       toggle)
-        # Bypasses the seen rule: marking the currently focused pane so it
-        # shows an icon after you switch away is the whole point.
         case "$(pane_state "$pane")" in
           done | failed) set_pane_state "$pane" idle ;;
           *) set_pane_state "$pane" done ;;
@@ -98,36 +116,24 @@ case "$cmd" in
     esac
     exit 0
     ;;
-  pick)
-    # The interactive pair, exposed here so a shell rc file can alias them.
-    # Unlike the state commands they are useful outside tmux, where they
-    # attach instead of switching the client.
-    shift
-    exec "$CURRENT_DIR/../scripts/picker.sh" "$@"
-    ;;
-  new)
-    shift
-    exec "$CURRENT_DIR/../scripts/new-session.sh" "$@"
-    ;;
-  -h | --help | help)
-    usage
-    exit 0
-    ;;
   '')
-    # No subcommand: on an interactive terminal this is the picker (the same
-    # screen as `new`; shift-tab toggles over to the session list). Anywhere
-    # else — a script or hook that ran us bare — print usage rather than grab
-    # the terminal. exec keeps it at the top level, which is what lets its
-    # attach find a terminal (see scripts/picker.sh).
-    if [ -t 0 ] && [ -t 1 ]; then
-      exec "$CURRENT_DIR/../scripts/new-session.sh"
+    [ "$#" -eq 0 ] || usage_error 'directory must not be empty'
+    if ! [ -t 0 ] || ! [ -t 1 ]; then usage >&2; exit 1; fi
+    attention_require tmux || exit 1
+    if tmux list-sessions >/dev/null 2>&1; then
+      exec "$CURRENT_DIR/scripts/picker.sh"
+    else
+      exec "$CURRENT_DIR/scripts/new-session.sh"
     fi
-    usage >&2
-    exit 1
     ;;
-  *)
-    printf 'tmux-attention: unknown command: %s\n' "$cmd" >&2
-    usage >&2
-    exit 1
+  --)
+    shift
+    [ "$#" -eq 1 ] && [ -n "$1" ] || usage_error '-- requires one directory'
     ;;
+  -*) usage_error "unknown option: $cmd" ;;
+  *) [ "$#" -eq 1 ] || usage_error 'expected one directory' ;;
 esac
+
+# Explicit directories do not need fzf. Prefix reserved names with ./ or --.
+attention_require tmux || exit 1
+exec "$CURRENT_DIR/scripts/new-session.sh" -- "$1"

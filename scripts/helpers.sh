@@ -3,7 +3,7 @@
 
 TAB="$(printf '\t')"
 
-# Sentinel a picker's view/new key emits (via fzf `become`) so the shell that
+# Sentinel a picker's view key emits (via fzf `become`) so the shell that
 # captured the picker's stdout hands over to the other picker with `exec`. Using
 # exec (not a nested `become` inside the $() capture) keeps each picker at the
 # top level with the terminal on its std streams — so attach works from a bare
@@ -23,9 +23,23 @@ attention_option() {
   fi
 }
 
+# CLI preferences are environment variables, not server options: they must
+# work before the first tmux server exists. Indirection is Bash 3.2 compatible;
+# unlike :-, the - fallback preserves an explicitly empty value.
+attention_env() {
+  local name="$1" default="$2"
+  printf '%s' "${!name-$default}"
+}
+
 attention_require() {
   command -v "$1" >/dev/null 2>&1 && return 0
   printf 'tmux-attention: requires %s (not found in PATH)\n' "$1" >&2
+  return 1
+}
+
+attention_require_terminal() {
+  [ -t 0 ] && [ -t 1 ] && return 0
+  printf 'tmux-attention: navigation requires a terminal\n' >&2
   return 1
 }
 
@@ -49,7 +63,7 @@ attention_tmux_quote() {
   printf '"%s"' "$value"
 }
 
-# Automatic setup for valid tracking use (and the optional plugin).
+# Automatic setup for valid tracking/navigation use (and the optional plugin).
 # Only internal native formats, icon defaults, and seen hooks are registered;
 # never rewrite themes or install bindings. Sourcing/help/rendering are read-only.
 # The real handler path and PATH refresh callbacks after install relocation.
@@ -107,6 +121,16 @@ ensure_server_hooks() {
     tmux set-hook -g "$owned" "$command" || return 1
   done
   tmux set-option -g @attention_hooks_version "$marker"
+}
+
+attention_go_to() {
+  ensure_server_hooks || return 1
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$1"
+  else
+    attention_require_terminal || return 1
+    tmux attach-session -t "$1"
+  fi
 }
 
 # Lower number = more urgent. Aggregate scopes show the lowest-numbered
