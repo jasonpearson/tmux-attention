@@ -798,6 +798,20 @@ if bash "$DIR/tests/terminal-tests.sh"; then
 else
   not_ok 'real-terminal navigation and attach/switch' failed passed
 fi
+if bash "$DIR/tests/package-tests.sh"; then
+  ok 'portable release package'
+else
+  not_ok 'portable release package' failed passed
+fi
+if command -v mise >/dev/null 2>&1; then
+  if bash "$DIR/tests/mise-tests.sh"; then
+    ok 'isolated mise execution and shim dispatch'
+  else
+    not_ok 'isolated mise execution and shim dispatch' failed passed
+  fi
+else
+  printf 'skip - optional mise smoke test (mise not installed)\n'
+fi
 
 # --- summary -----------------------------------------------------------------
 

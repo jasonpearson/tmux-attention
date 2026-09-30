@@ -20,7 +20,31 @@ Requires Bash ≥ 3.2 and tmux ≥ 3.3. Interactive navigation also requires
 walker). `column` is optional for aligning the panes table. Direct directory
 entry, state commands, and `run` do not need fzf.
 
-### Source
+### Mise
+
+```sh
+mise use -g tmux fzf github:jasonpearson/tmux-attention@0.2.0
+tmux-attention
+```
+
+Or add to `~/.config/mise/config.toml` and run `mise install`:
+
+```toml
+[tools]
+"github:jasonpearson/tmux-attention" = "0.2.0"
+# Keep your existing tmux/fzf version pins, or add them if missing.
+```
+
+The GitHub backend installs our universal release archive and discovers its
+`bin/` directory. There is no custom mise plugin or postinstall setup. These
+commands require a **published release asset**, not merely a Git tag. For an
+unreleased checkout, use the source installation below.
+
+For noninteractive callers without mise's activated PATH, use the stable shim
+`~/.local/share/mise/shims/tmux-attention` (with the default mise data directory),
+or `mise exec -- tmux-attention …`. Do not hardcode a versioned install path.
+
+### Source or release archive
 
 Keep `bin/`, `scripts/`, and `VERSION` together and add `bin/` to PATH:
 
@@ -311,6 +335,22 @@ checkout path or shell alias is needed.
 - Keep only one installation; update hook paths and reload tmux after switching.
   Remove a previously installed prefix+A directory binding with `unbind-key A`
   if that binding still belongs to tmux-attention, or restart the server.
+
+## Development and releases
+
+```sh
+bash tests/run-tests.sh        # isolated tmux servers, safe beside live sessions
+bash tests/package-tests.sh    # portable archive, checksums, symlinks
+bash scripts/package.sh        # dist/tmux-attention-VERSION.tar.gz + SHA256SUMS
+```
+
+The acceptance suite includes real-terminal navigation tests and, when mise is
+available, isolated offline mise execution/shim tests. No global tools or user
+configuration are changed by these tests.
+
+To release, update `VERSION`, run the tests, commit, and push the matching
+`vMAJOR.MINOR.PATCH` tag. The release workflow validates the tag and publishes
+one portable archive plus checksums. A tag alone is not a mise-installable release.
 
 ## License
 

@@ -31,9 +31,12 @@ surfaces icons in the status bar plus an fzf session picker.
   views, sorting, column alignment, jump, and the confirmed kill.
 - `scripts/new-session.sh` — directory picker/direct directory → session
   named after its canonical leaf. A private implementation, not public API.
+- `VERSION`, `scripts/package.sh` — release version and portable tar.gz builder;
+  archives preserve bin/ and scripts/ for mise's GitHub backend to discover.
 - `tests/run-tests.sh` — acceptance tests against isolated tmux servers
   (`-L` sockets), including native-format-tests.sh (priorities, live icons and
-  staleness), cli-tests.sh, and terminal-tests.sh (real PTYs via a driver tmux server).
+  staleness), cli-tests.sh, terminal-tests.sh (real PTYs via a driver tmux server),
+  package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
 ## Core model
@@ -166,3 +169,7 @@ surfaces icons in the status bar plus an fzf session picker.
   "CLI preferences", and "All tmux options", listing every supported setting
   at its real default (internal runtime options are not configuration). A new
   setting needs a line there and, for key/state changes, a prose mention.
+- Releases must preserve executable modes and the sibling-file layout. Test
+  paths containing spaces/quotes, executable symlinks, and actual terminal
+  handoffs; syntax checks and headless state tests alone do not prove attach.
+  Never publish a release or change a live tmux server while testing.
