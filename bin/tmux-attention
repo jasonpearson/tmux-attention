@@ -60,10 +60,13 @@ case "$cmd" in
       exit 1
     fi
     pane="${TMUX_PANE:-}"
-    if [ -z "${TMUX:-}" ] || [ -z "$pane" ]; then
+    if [ -z "${TMUX:-}" ] || [ -z "$pane" ] ||
+      ! tmux display-message -p -t "$pane" '' >/dev/null 2>&1; then
       "$@"
       exit "$?"
     fi
+    # Tracking must never prevent the wrapped command from running.
+    ensure_server_hooks
     set_pane_state "$pane" working
     "$@"
     rc="$?"
@@ -79,6 +82,7 @@ case "$cmd" in
     pane="${2:-${TMUX_PANE:-}}"
     [ -n "$pane" ] || exit 0
     tmux display-message -p -t "$pane" '' >/dev/null 2>&1 || exit 0 # dead pane
+    ensure_server_hooks || exit 1
     case "$cmd" in
       working | idle | unknown) set_pane_state "$pane" "$cmd" ;;
       blocked | failed | done) record "$pane" "$cmd" ;;

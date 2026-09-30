@@ -23,6 +23,92 @@ attention_option() {
   fi
 }
 
+attention_require() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  printf 'tmux-attention: requires %s (not found in PATH)\n' "$1" >&2
+  return 1
+}
+
+# Quote data for sh -c and, separately, the tmux command parser. Hook commands
+# pass through both parsers; a path containing spaces, quotes or $ must survive.
+attention_shell_quote() {
+  local rest="$1"
+  printf "'"
+  while [[ "$rest" = *"'"* ]]; do
+    printf '%s' "${rest%%\'*}" "'\\''"
+    rest="${rest#*\'}"
+  done
+  printf "%s'" "$rest"
+}
+
+attention_tmux_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//\$/\\\$}"
+  printf '"%s"' "$value"
+}
+
+# Automatic setup for valid tracking use (and the optional plugin).
+# Only internal native formats, icon defaults, and seen hooks are registered;
+# never rewrite themes or install bindings. Sourcing/help/rendering are read-only.
+# The real handler path and PATH refresh callbacks after install relocation.
+ensure_server_hooks() {
+  local handler="${BASH_SOURCE[0]%/*}/seen.sh" marker
+  # shellcheck source=formats.sh
+  source "${BASH_SOURCE[0]%/*}/formats.sh"
+  ensure_icon_formats || return 1
+  marker="2:$handler:$PATH"
+  local hooks hook line key owned index command installed=' ' count=0
+  hooks="$(tmux show-hooks -g 2>/dev/null)" || return 1
+  # A config reload may replace a hook array without clearing our marker.
+  # Verify all four handlers before taking the fast path, without reinstalling
+  # callbacks on every state update or needing a public repair/setup command.
+  if [ "${1:-}" != --force ] &&
+    [ "$(tmux show-options -gqv @attention_hooks_version 2>/dev/null)" = "$marker" ]; then
+    while IFS= read -r line; do
+      case "$line" in *'tmux-attention:seen'*) ;; *) continue ;; esac
+      key="${line%%\[*}"
+      installed="$installed$key "
+      count=$((count + 1))
+    done <<<"$hooks"
+    for hook in after-select-pane after-select-window client-session-changed client-attached; do
+      case "$installed" in *" $hook "*) ;; *) count=0 ;; esac
+    done
+    [ "$count" -eq 4 ] && return 0
+  fi
+  command="export PATH=$(attention_shell_quote "${PATH//#/##}"); exec $(attention_shell_quote "${handler//#/##}") # tmux-attention:seen"
+  command="run-shell $(attention_tmux_quote "$command")"
+  for hook in after-select-pane after-select-window client-session-changed client-attached; do
+    owned=''
+    while IFS= read -r line; do
+      case "$line" in "$hook["*) ;; *) continue ;; esac
+      case "$line" in
+        *'tmux-attention:seen'* | *'/tmux-attention/scripts/seen.sh'*)
+          key="${line%% *}"
+          if [ -z "$owned" ]; then
+            owned="$key"
+          else
+            # Remove only our duplicate/old handlers, never other plugins'.
+            tmux set-hook -gu "$key" || return 1
+          fi
+          ;;
+      esac
+    done <<<"$hooks"
+    if [ -z "$owned" ]; then
+      # A deterministic free slot makes simultaneous first invocations converge
+      # instead of appending duplicate hooks. Respect a pre-existing occupant.
+      index=4242
+      while printf '%s\n' "$hooks" | grep -q "^${hook}\\[${index}\\] "; do
+        index=$((index + 1))
+      done
+      owned="$hook[$index]"
+    fi
+    tmux set-hook -g "$owned" "$command" || return 1
+  done
+  tmux set-option -g @attention_hooks_version "$marker"
+}
+
 # Lower number = more urgent. Aggregate scopes show the lowest-numbered
 # state among their member panes.
 state_priority() {
@@ -46,15 +132,6 @@ state_icon() {
     working) attention_option '@attention_icon_working' '⚙️' ;;
     idle)    attention_option '@attention_icon_idle' '' ;;
   esac
-}
-
-# Print a state's icon plus a trailing space, or nothing for stateless
-# panes and states whose icon is empty.
-render_icon() {
-  local icon
-  icon="$(state_icon "$1")"
-  [ -n "$icon" ] && printf '%s ' "$icon"
-  return 0
 }
 
 # @attention_stale_timeout in seconds; 0 when off/unset/non-numeric.
@@ -110,41 +187,4 @@ clear_pane_state() {
   tmux set-option -pu -t "$1" @attention_state 2>/dev/null
   tmux set-option -pu -t "$1" @attention_since 2>/dev/null
   refresh_all_clients
-}
-
-# Fold "state<TAB>since" lines from stdin into the highest-priority
-# effective state (empty when everything is untracked).
-best_state() {
-  local timeout now state since p best='' best_p=7
-  timeout="$(stale_timeout_seconds)"
-  now="$(date +%s)"
-  while IFS="$TAB" read -r state since; do
-    [ -n "$state" ] || continue
-    state="$(effective_state "$state" "$since" "$timeout" "$now")"
-    p="$(state_priority "$state")"
-    if [ "$p" -lt "$best_p" ]; then
-      best_p="$p"
-      best="$state"
-    fi
-  done
-  printf '%s' "$best"
-}
-
-window_state() {
-  tmux list-panes -t "$1" -F "#{@attention_state}${TAB}#{@attention_since}" 2>/dev/null | best_state
-}
-
-session_state() {
-  tmux list-panes -s -t "$1" -F "#{@attention_state}${TAB}#{@attention_since}" 2>/dev/null | best_state
-}
-
-# Highest-priority effective state among panes in every session except the
-# given one (empty when nothing outside it is tracked).
-global_state() {
-  local current="$1" sid state since
-  tmux list-panes -a -F "#{session_id}${TAB}#{@attention_state}${TAB}#{@attention_since}" 2>/dev/null |
-    while IFS="$TAB" read -r sid state since; do
-      [ "$sid" = "$current" ] && continue
-      printf '%s\t%s\n' "$state" "$since"
-    done | best_state
 }

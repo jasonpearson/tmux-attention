@@ -4,12 +4,12 @@
 
 set -u
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$DIR/bin/tmux-attention"
-ICON="$DIR/scripts/icon.sh"
 PICKER="$DIR/scripts/picker.sh"
 NEWSESSION="$DIR/scripts/new-session.sh"
 SOCK="attention-test-$$"
+TEST_TMP="$(cd "$(mktemp -d)" && pwd -P)"
 
 T() { command tmux -L "$SOCK" "$@"; }
 
@@ -33,10 +33,18 @@ assert_contains() { # desc haystack needle
   esac
 }
 
-cleanup() { T kill-server 2>/dev/null; }
+cleanup() {
+  T kill-server 2>/dev/null
+  exec 9>&-
+  [ -z "${CONTROL_PID:-}" ] || wait "$CONTROL_PID" 2>/dev/null
+  rm -rf "$TEST_TMP"
+}
 trap cleanup EXIT
 
 state_of() { T show-options -pqv -t "$1" @attention_state; }
+# Read the exact native format a user's theme evaluates. No helper process or
+# initialization is involved in rendering, including session/global aggregation.
+native_icon() { tmux display-message -p -t "$2" "#{T:@attention_$1}"; }
 
 # --- server layout: alpha (2 panes), beta, gamma; no clients attached ------
 
@@ -67,36 +75,68 @@ inside() {
   TMUX="$FAKE_TMUX" TMUX_PANE="$pane" "$@"
 }
 
-# --- plugin load: interpolation, hooks, idempotency -------------------------
+# --- automatic behavior without UI initialization --------------------------
 
-T set -g status-left 'L:#{attention_session}#{attention_global}|'
-T set -g window-status-format 'W:#{attention_window}'
-T set -g pane-border-format 'P:#{attention_pane}'
-
-inside "$A1" bash "$DIR/attention.tmux"
-inside "$A1" bash "$DIR/attention.tmux" # second load must not duplicate hooks
-
-assert_contains 'status-left interpolates #{attention_session}' \
-  "$(T show-option -gqv status-left)" "icon.sh session '#{session_id}')"
-assert_contains 'status-left interpolates #{attention_global}' \
-  "$(T show-option -gqv status-left)" "icon.sh global '#{session_id}')"
-assert_contains 'window-status-format interpolates #{attention_window}' \
-  "$(T show-option -gqv window-status-format)" "icon.sh window '#{window_id}')"
-assert_contains 'pane-border-format interpolates #{attention_pane} to a pure format' \
-  "$(T show-option -gqv pane-border-format)" '#{?#{==:#{@attention_state},blocked},🟠 ,'
-assert_eq 'hooks registered exactly once each despite double load' \
+before_status="$(T show-options -gqv status-left)"
+before_keys="$(T list-keys -T prefix)"
+inside "$A1" "$BIN" --help >/dev/null
+env -u TMUX -u TMUX_PANE "$BIN" working
+assert_eq 'help and outside state no-ops do not install hooks' \
+  "$(T show-hooks -g | grep -c 'seen\.sh')" 0
+assert_eq 'help and outside state no-ops do not install formats' \
+  "$(T show-options -gqv @attention_formats_version)" ''
+# Other plugins can occupy any slot; even our preferred index is not reserved.
+T set-hook -g 'after-select-pane[4242]' 'set-option -g @other_hook fired'
+T set -g @attention_icon_failed 'PRESET'
+T set -g @attention_icon_blocked ''
+inside "$A1" "$BIN" working
+assert_eq 'first state command installs all seen hooks' \
   "$(T show-hooks -g | grep -c 'seen\.sh')" 4
-assert_eq 'toggle key bound' \
-  "$(T list-keys -T prefix h 2>/dev/null | grep -c tmux-attention)" 1
-assert_eq 'picker key bound' \
-  "$(T list-keys -T prefix a 2>/dev/null | grep -c picker.sh)" 1
+assert_eq 'first use preserves a preconfigured icon' \
+  "$(T show-options -gqv @attention_icon_failed)" PRESET
+assert_eq 'first use preserves an explicitly empty icon' \
+  "$(T show-options -gqv @attention_icon_blocked)" ''
+T set -g @attention_icon_failed '☠️'
+T set -g @attention_icon_blocked '🟠'
+assert_contains 'automatic hooks preserve other plugins' \
+  "$(T show-hooks -g)" '@other_hook'
+assert_eq 'state command does not rewrite the theme' \
+  "$(T show-options -gqv status-left)" "$before_status"
+assert_eq 'state command does not install key bindings' \
+  "$(T list-keys -T prefix)" "$before_keys"
+inside "$A1" "$BIN" clear
+# Concurrent initialization must converge on the same handler slots.
+T set -gu @attention_hooks_version
+for n in 1 2 3 4; do inside "$A1" "$BIN" idle & done
+wait
+assert_eq 'concurrent state commands do not duplicate hooks' \
+  "$(T show-hooks -g | grep -c 'seen\.sh')" 4
+inside "$A1" "$BIN" clear
 
-# pane scope is a pure format expression, not a #() job: jobs render one
-# redraw late and refresh-client -S never repaints borders, so a job-backed
-# border icon only updated when focus changed.
+# --- native formats: no setup command or theme rewriting -------------------
+
+T set -g status-left 'L:#{T:@attention_session}#{T:@attention_global}|'
+T set -g window-status-format 'W:#{T:@attention_window}'
+T set -g pane-border-format 'P:#{T:@attention_pane}'
+
+for scope in pane window session global; do
+  assert_eq "first state use registers the native $scope format" \
+    "$(T show-options -gqv "@attention_$scope" | grep -c '#{')" 1
+  assert_eq "$scope renders without a shell job" \
+    "$(T show-options -gqv "@attention_$scope" | grep -Fc '#(')" 0
+done
+inside "$A1" bash "$DIR/attention.tmux"
+inside "$A1" bash "$DIR/attention.tmux"
+assert_eq 'optional plugin preserves the native status format verbatim' \
+  "$(T show-option -gqv status-left)" 'L:#{T:@attention_session}#{T:@attention_global}|'
+assert_eq 'optional plugin does not install bindings' \
+  "$(T list-keys -T prefix)" "$before_keys"
+assert_eq 'hooks registered exactly once each despite double plugin load' \
+  "$(T show-hooks -g | grep -c 'seen\.sh')" 4
+
 BORDER_FMT="$(T show-option -gqv pane-border-format)"
 T set -p -t "$A1" @attention_state done
-assert_eq 'pane border renders done via pure format' \
+assert_eq 'pane border renders done via native format' \
   "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:🔥 '
 T set -p -t "$A1" @attention_state idle
 assert_eq 'pane border renders nothing for idle' \
@@ -104,17 +144,6 @@ assert_eq 'pane border renders nothing for idle' \
 T set -pu -t "$A1" @attention_state
 assert_eq 'pane border renders nothing for untracked' \
   "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:'
-
-# with @attention_stale_timeout on, pane scope keeps the #() job (a format
-# expression cannot compute the working->unknown downgrade)
-T set -g @attention_stale_timeout 30
-T set -g pane-border-format 'P:#{attention_pane}'
-inside "$A1" bash "$DIR/attention.tmux"
-assert_contains 'stale timeout keeps the #() job for pane scope' \
-  "$(T show-option -gqv pane-border-format)" "icon.sh pane '#{pane_id}')"
-T set -gu @attention_stale_timeout
-T set -g pane-border-format 'P:#{attention_pane}'
-inside "$A1" bash "$DIR/attention.tmux"
 
 # --- recording with nothing focused (no attached clients) -------------------
 
@@ -135,86 +164,80 @@ assert_eq 'working overwrites blocked' "$(state_of "$A2")" working
 # --- aggregation and icons ---------------------------------------------------
 
 # alpha: A1=done, A2=working
-assert_eq 'pane icon for done' "$(inside "$A1" bash "$ICON" pane "$A1")" '🔥 '
+assert_eq 'pane icon for done' "$(inside "$A1" native_icon pane "$A1")" '🔥 '
 assert_eq 'window aggregation: done outranks working' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '🔥 '
+  "$(inside "$A1" native_icon window "$A_WIN")" '🔥 '
 inside "$A2" "$BIN" failed
 assert_eq 'window aggregation: failed outranks done' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '☠️ '
+  "$(inside "$A1" native_icon window "$A_WIN")" '☠️ '
 assert_eq 'session aggregation matches window' \
-  "$(inside "$A1" bash "$ICON" session "$A_SID")" '☠️ '
+  "$(inside "$A1" native_icon session "$A_SID")" '☠️ '
 
 assert_eq 'global icon shows the highest-priority state elsewhere' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '☠️ '
+  "$(inside "$B1" native_icon global "$B_SID")" '☠️ '
 assert_eq 'global icon excludes own session' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
-
-# real status-job path: tmux expands #{session_id} to a literal $N and runs
-# the #() job via sh -c, which would swallow an unquoted $N as a shell
-# positional parameter. Regression for the bug where global showed
-# own-session attention in session $0 and nothing at all in other sessions.
-inner="$(T show-option -gqv status-left | grep -o '#([^)]*icon\.sh global[^)]*)' | sed 's/^#(//; s/)$//')"
-job="$(T display-message -p -t "$B1" "$inner")"
-assert_eq 'status job carries the session id quoted against sh -c' \
-  "$job" "$DIR/scripts/icon.sh global '$B_SID'"
-assert_eq 'global icon renders via the real sh -c job path' \
-  "$(inside "$B1" sh -c "$job")" '☠️ '
-job_a="$(T display-message -p -t "$A1" "$inner")"
-assert_eq 'own-session ($0) attention stays hidden via the sh -c job path' \
-  "$(inside "$A1" sh -c "$job_a")" ''
+  "$(inside "$A1" native_icon global "$A_SID")" ''
+assert_eq 'native status format composes scopes and ordinary theme text' \
+  "$(T display-message -p -t "$A1" "$(T show-options -gqv status-left)")" 'L:☠️ |'
 inside "$G1" "$BIN" working
 assert_eq 'working elsewhere aggregates as working' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '⚙️ '
+  "$(inside "$A1" native_icon global "$A_SID")" '⚙️ '
 inside "$G1" "$BIN" unknown
 assert_eq 'unknown elsewhere aggregates as unknown' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '❓ '
+  "$(inside "$A1" native_icon global "$A_SID")" '❓ '
 assert_eq 'session icon for unknown' \
-  "$(inside "$G1" bash "$ICON" session "$G_SID")" '❓ '
+  "$(inside "$G1" native_icon session "$G_SID")" '❓ '
 
-# the aggregate spans every other session: failed in alpha outranks
-# blocked in gamma when viewed from beta
 T set -p -t "$G1" @attention_state blocked
 assert_eq 'global picks the highest priority across other sessions' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '☠️ '
+  "$(inside "$B1" native_icon global "$B_SID")" '☠️ '
 T set -p -t "$G1" @attention_state unknown
 
-# --- icon configurability ----------------------------------------------------
+# --- icon configurability: changes are live, not baked into expressions ------
 
 T set -g @attention_icon_failed 'F!'
-assert_eq 'icon option override' "$(inside "$A1" bash "$ICON" window "$A_WIN")" 'F! '
+assert_eq 'icon option override' "$(inside "$A1" native_icon window "$A_WIN")" 'F! '
 assert_eq 'icon override flows through the global aggregate' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" 'F! '
+  "$(inside "$B1" native_icon global "$B_SID")" 'F! '
+T set -g @attention_icon_failed ''
+assert_eq 'hiding the highest-priority icon does not expose a lower priority' \
+  "$(inside "$A1" native_icon session "$A_SID")" ''
 T set -gu @attention_icon_failed
 T set -g @attention_icon_unknown ''
 assert_eq 'explicitly empty icon renders nothing' \
-  "$(inside "$G1" bash "$ICON" session "$G_SID")" ''
+  "$(inside "$G1" native_icon session "$G_SID")" ''
 T set -gu @attention_icon_unknown
 
-# --- staleness ---------------------------------------------------------------
+# --- staleness: evaluated natively, never stored back into pane state --------
 
 inside "$B1" "$BIN" working
 T set -p -t "$B1" @attention_since "$(($(date +%s) - 100))"
 T set -g @attention_stale_timeout 30
 assert_eq 'stale working renders as unknown' \
-  "$(inside "$B1" bash "$ICON" pane "$B1")" '❓ '
-# viewed from alpha so beta's stale pane is the highest state elsewhere
-# (gamma idles to keep its unknown from providing the ❓ instead)
+  "$(inside "$B1" native_icon pane "$B1")" '❓ '
 inside "$G1" "$BIN" idle
 assert_eq 'stale working aggregates as unknown for global' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '❓ '
+  "$(inside "$A1" native_icon global "$A_SID")" '❓ '
+assert_eq 'native stale rendering does not rewrite working' "$(state_of "$B1")" working
 T set -gu @attention_stale_timeout
 assert_eq 'timeout off: old working stays working' \
-  "$(inside "$B1" bash "$ICON" pane "$B1")" '⚙️ '
+  "$(inside "$B1" native_icon pane "$B1")" '⚙️ '
 
 # --- clear -------------------------------------------------------------------
 
 inside "$G1" "$BIN" clear
 assert_eq 'clear removes state' "$(state_of "$G1")" ''
-assert_eq 'cleared pane renders nothing' "$(inside "$G1" bash "$ICON" pane "$G1")" ''
+assert_eq 'cleared pane renders nothing' "$(inside "$G1" native_icon pane "$G1")" ''
+
+# Native rendering/defaults/overrides also get exhaustive isolated coverage.
+source "$DIR/tests/native-format-tests.sh"
 
 # --- focus behavior (control-mode client attached to alpha) ------------------
 
-sleep 30 | T -C attach-session -t alpha >/dev/null 2>&1 &
+mkfifo "$TEST_TMP/control"
+T -C attach-session -t alpha <"$TEST_TMP/control" >/dev/null 2>&1 &
+CONTROL_PID=$!
+exec 9>"$TEST_TMP/control"
 sleep 1
 assert_eq 'control client attached' "$(T list-clients | grep -c .)" 1
 CLIENT="$(T list-clients -F '#{client_name}')"
@@ -697,6 +720,9 @@ assert_eq 'unknown command errors' "$?" 1
 assert_eq 'no command without a tty exits 1' "$?" 1
 assert_contains 'no command without a tty prints usage' \
   "$("$BIN" 2>&1 >/dev/null)" 'usage: tmux-attention'
+
+# Additional acceptance cases share the isolated server and assertions above.
+source "$DIR/tests/cli-tests.sh"
 
 # --- summary -----------------------------------------------------------------
 

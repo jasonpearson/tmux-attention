@@ -6,9 +6,8 @@ tmux-attention tracks the state of work running in panes across sessions — cod
 
 - **Tool-agnostic** — anything that can run a shell command can integrate:
   agents via their hook systems, plain commands via a shell wrapper.
-- **Theme-agnostic** — you place icons with format placeholders; works with
-  any theme or status-bar setup.
-- **Fully configurable** — every icon and key binding is a tmux option.
+- **Theme-agnostic** — place native tmux icon formats in any theme or status bar.
+- **Optional tmux UI** — customize icons and define your own bindings.
 - **Zero maintenance** — state lives in tmux pane options, so it dies with
   the pane/server; no files, no cleanup, no daemons.
 
@@ -25,51 +24,69 @@ Each tmux pane in each tmux session has a single state:
 | `working` | actively running                      | ⚙️           | 5           |
 | `idle`    | finished/waiting and already seen     | (none)       | 6           |
 
+Untracked panes do not contribute to aggregates. `clear` removes tracking;
+`idle` keeps it. Recording blocked/failed/done on a focused pane records idle
+instead; focusing a notifying pane also idles it. An unanswered blocked state
+is not overwritten by done/failed. `toggle` bypasses the seen rule for manual
+marking.
+
+Seen-rule hooks and native tmux formats register automatically on valid state
+use. Neither state commands nor plugin loading changes your theme or key
+bindings. Help and outside-tmux state no-ops do not set up hooks/formats.
+
 To customize icons, see [All tmux options](#all-tmux-options).
 
-## Configuration
+## Optional tmux UI
 
-tmux-attention ships with the placeholders below. Add them to your `~/.tmux.conf` as desired.
+Place these native tmux formats in your existing theme. Use the `T:` modifier
+to expand both formats and time substitutions, including the current time used
+for stale-state rendering. No shell helper is involved:
 
-| Placeholder            | Shows                                              | Suggested home                                          |
-| ---------------------- | -------------------------------------------------- | ------------------------------------------------------- |
-| `#{attention_pane}`    | this pane's state                                  | `pane-border-format`                                    |
-| `#{attention_window}`  | highest-priority state in the window               | `window-status-format` / `window-status-current-format` |
-| `#{attention_session}` | highest-priority state in the session              | session picker (built in); also usable in `status-left` |
-| `#{attention_global}`  | highest-priority state across all _other_ sessions | `status-left`                                           |
+| Format | Shows | Suggested home |
+| --- | --- | --- |
+| `#{T:@attention_pane}` | this pane's state | `pane-border-format` |
+| `#{T:@attention_window}` | highest-priority state in the window | window status formats |
+| `#{T:@attention_session}` | highest-priority state in the session | `status-left` |
+| `#{T:@attention_global}` | highest-priority state across all **other** sessions | `status-left` or `status-right` |
 
-The minimal `~/.tmux.conf` config below can be used to get started:
+For example, in `tmux.conf`:
 
 ```tmux
-# ~/.tmux.conf
-set -g @plugin 'tmux-plugins/tpm'
-set -g @plugin 'jasonpearson/tmux-attention'
-
-set -ogq @base "#11111b"
-set -ogq @subtle "#bac2de"
-set -ogq @accent "#94e2d5"
-
-set -g base-index 1
-set -g status-left-length 400
-set -g status-left ' #{attention_global}[#S] '
-set -g status-style "bg=#{@base}"
-set -g window-status-format " #[fg=#{@subtle}]#[bg=#{@base}] #{attention_window}#I #W"
-set -g window-status-current-format ' #[fg=#{@accent}]#[bg=#{@base}]#{attention_window}#I #W'
-set -g pane-border-format '#{attention_pane}#{b:pane_current_path} #{pane_title}'
+set -g status-left ' #{T:@attention_global}[#S] #{T:@attention_session}'
+set -g window-status-format ' #{T:@attention_window}#I:#W '
+set -g window-status-current-format ' #{T:@attention_window}#I:#W '
+set -g pane-border-format '#{T:@attention_pane}#{b:pane_current_path} #{pane_title}'
 set -g pane-border-status top
-
-run '~/.tmux/plugins/tpm/tpm'   # keep this last; tmux-attention after any theme
-
 ```
 
-After adding [TPM](https://github.com/tmux-plugins/tpm) or [tpack](https://github.com/tmuxpack/tpack) to `~/.tmux.conf`, open `tmux` and install with `prefix + I`.
+The formats register automatically on state use. Until then they expand to
+blank; before tracked work, that is expected. Rendering uses native tmux
+expressions, with no `#()` shell jobs or installation paths embedded in your
+theme. Registration is idempotent and preserves other plugins' hooks.
+Subsequent state use repairs attention hooks removed by a config reload. After
+an upgrade, run a state command against each existing server before removing
+the old installation, so stored seen-hook paths are refreshed.
 
-tmux-attention dependencies:
+For registration before the first state command, optionally load through
+TPM/tpack with `set -g @plugin 'jasonpearson/tmux-attention'`. The
+`attention.tmux` adapter registers the same formats and seen hooks; it does
+not rewrite themes or install bindings.
 
-- tmux ≥ 3.2
-- [fzf](https://github.com/junegunn/fzf) ≥ 0.40 — ≥ 0.48 for the directory
-  picker's built-in walk, or set `@attention_picker_dir_command` to supply
-  the directories yourself
+### Opt-in bindings
+
+No keys are installed automatically. Add ordinary tmux bindings, or choose
+your own keys (the executable must be on tmux's PATH):
+
+```tmux
+bind-key a display-popup -E -d '#{pane_current_path}' -w 60% -h 60% 'tmux-attention pick'
+bind-key A display-popup -E -d '#{pane_current_path}' -w 60% -h 60% 'tmux-attention new'
+bind-key h run-shell 'tmux-attention toggle "#{pane_id}"'
+```
+
+Requires Bash ≥ 3.2 and tmux ≥ 3.3. Interactive navigation also requires
+[fzf](https://github.com/junegunn/fzf) ≥ 0.40 — ≥ 0.48 for the directory
+picker's built-in walk, or set `@attention_picker_dir_command` to supply
+the directories yourself.
 
 ## At-a-glance status bar icons
 
@@ -145,8 +162,8 @@ tmux-attention pick                 # session picker: find a target, go to it
 tmux-attention new [dir]            # directory picker: get a session for a directory
 ```
 
-`pane_id` defaults to `$TMUX_PANE`. `toggle` (bound to `prefix + h` by
-default) bypasses the seen rule so you can mark the pane you're looking at
+`pane_id` defaults to `$TMUX_PANE`. `toggle` (bound to `prefix + h` in the
+opt-in example) bypasses the seen rule so you can mark the pane you're looking at
 and get reminded about it after you switch away.
 
 `pick` and `new` are the interactive pair, and the exception to the
@@ -210,7 +227,13 @@ instead of switching the client.
 
 ## All tmux options
 
-Every option, shown set to its default:
+Every option, shown set to its default. Each valid state command or plugin
+load fills in unset icon defaults. Global overrides remain live: change them
+before or after registration, without regenerating formats. An explicitly
+empty icon hides that state's icon; idle is intentionally empty by default.
+To reset an icon, unset its option (for example, `tmux set -gu
+@attention_icon_done`); the next state command or plugin load restores the
+default.
 
 ```tmux
 # state icons
@@ -221,13 +244,8 @@ set -g @attention_icon_unknown '❓'
 set -g @attention_icon_working '⚙️'
 set -g @attention_icon_idle    ''
 
-# downgrade unrefreshed `working` to `unknown` after N seconds
+# Render working as unknown after N seconds without an update; no state rewrite.
 set -g @attention_stale_timeout 'off'
-
-# key bindings (prefix table)
-set -g @attention_toggle_key 'h'
-set -g @attention_picker_key 'a'
-set -g @attention_new_key    'A'      # directory picker -> session
 
 # keys inside the picker (fzf key names)
 set -g @attention_picker_kill_key   'K'      # kills the selected session/window/pane (confirms first)
@@ -255,6 +273,22 @@ set -g @attention_picker_sort           'attention'
 set -g @attention_picker_collapsed_icon '▶'
 set -g @attention_picker_expanded_icon  '▼'
 ```
+
+## Migrating native status formats
+
+- Upgrade tmux to **3.3 or newer**. Native aggregation needs its larger format
+  nesting limit; tmux 3.2 can silently misrender icons in nested theme formats.
+- Replace `#{attention_pane}`, `#{attention_window}`, `#{attention_session}`,
+  and `#{attention_global}` with `#{T:@attention_pane}`,
+  `#{T:@attention_window}`, `#{T:@attention_session}`, and `#{T:@attention_global}`.
+- Replace `@attention_picker_key`, `@attention_new_key`, and
+  `@attention_toggle_key` with your own [tmux bindings](#opt-in-bindings).
+  Remove old generated bindings with `unbind-key a` / `unbind-key A` /
+  `unbind-key h` if they still belong to tmux-attention, before adding replacements.
+- Reload your original theme/status definitions with the new formats to remove
+  persisted generated `#()` jobs, baked-in icons, and old installation paths.
+  Reloading does not automatically undo settings omitted from your config;
+  explicitly reset any leftover formats/bindings you no longer want.
 
 ## License
 

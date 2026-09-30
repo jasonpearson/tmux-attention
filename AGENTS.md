@@ -4,7 +4,8 @@ Guidance for coding agents working in this repo.
 
 ## What this is
 
-A tmux plugin, pure bash, no runtime dependencies beyond tmux (≥ 3.2),
+A CLI with optional tmux UI/plugin integration, pure Bash ≥ 3.2, with
+no runtime dependencies beyond standard Unix tools, tmux (≥ 3.3),
 fzf (≥ 0.40 for both pickers, ≥ 0.48 for the directory picker's built-in
 walk), and optionally `column` (picker table alignment). It tracks the
 state of long-running work per pane in tmux pane user options and
@@ -12,18 +13,18 @@ surfaces icons in the status bar plus an fzf session picker.
 
 ## Layout
 
-- `attention.tmux` — TPM/tpack entry point, runs once at plugin load:
-  interpolates `#{attention_*}` placeholders into the status options,
-  registers the seen-rule hooks, installs key bindings.
+- `attention.tmux` — optional TPM/tpack adapter registering the same native
+  formats and seen hooks as state use, without theme rewrites or bindings.
 - `bin/tmux-attention` — the public CLI integrations call
   (`working`/`blocked`/`done`/... and the `run` wrapper). Implements the
   seen rule and the blocked guard in `record()`.
 - `scripts/helpers.sh` — shared functions; sourced, never executed.
-  Option access, state priorities, icons, `effective_state` (stale
-  downgrade), window/session/global aggregation.
-- `scripts/icon.sh` — status-format `#()` helper printing one scope's
-  icon. Runs on **every status render**: keep it cheap and
-  dependency-free.
+  Option access, automatic idempotent setup, state priorities, icons,
+  and `effective_state` (the picker's stale downgrade).
+- `scripts/formats.sh` — native tmux format helpers; source-only with no
+  side effects. Defines registration of `@attention_pane`, `@attention_window`,
+  `@attention_session`, and `@attention_global`; themes consume them through
+  `#{T:@attention_session}` etc. No shell render jobs.
 - `scripts/seen.sh` — focus-hook handler: focused panes in a notifying
   state (blocked/failed/done) downgrade to idle.
 - `scripts/picker.sh` — the fzf popup: sessions tree and flat panes
@@ -32,9 +33,10 @@ surfaces icons in the status bar plus an fzf session picker.
   directory's leaf. The picker's new key *becomes* this script (fzf
   replaces itself, so the popup only changes contents); it is also bound
   directly and runs standalone from a shell.
-- `tests/run-tests.sh` — acceptance tests against an isolated tmux
-  server (`-L` socket), safe to run next to a real tmux session:
-  `bash tests/run-tests.sh`.
+- `tests/run-tests.sh` — acceptance tests against an isolated tmux server
+  (`-L` socket), including native-format-tests.sh (priorities, live icons and
+  staleness) and cli-tests.sh (automatic setup and hook repair).
+  Safe beside real sessions: `bash tests/run-tests.sh`.
 
 ## Core model
 
@@ -43,12 +45,13 @@ surfaces icons in the status bar plus an fzf session picker.
   Priorities (lower = more urgent): failed 1, blocked 2, done 3,
   unknown 4, working 5, idle 6, untracked 7. Aggregates (window,
   session, global) show the best-priority state; untracked panes never
-  count.
+  count. Global excludes the current session.
 - Seen rule: recording blocked/failed/done on the focused pane records
   idle instead, and focusing a notifying pane downgrades it to idle.
   Blocked guard: done/failed never overwrite an unanswered blocked.
 - `@attention_stale_timeout`: a `working` older than N seconds *renders*
-  as unknown (`effective_state`) — the downgrade is never written back.
+  as unknown in both native formats and the picker (`effective_state`) —
+  the downgrade is never written back.
 - Every state change calls `refresh_all_clients` (full redraws;
   `refresh-client -S` would skip pane borders).
 
@@ -100,16 +103,30 @@ surfaces icons in the status bar plus an fzf session picker.
   spaces to align them. The picker puts icons in a tab-terminated field
   that fzf expands to a stop (`--tabstop`) with its own width engine;
   only near-ASCII text fields go through `column -t`.
-- **Load order**: interpolation rewrites options a theme has already
-  built, and icons are baked into the pane-border format expression at
-  load time — so user options must be set before the plugin loads.
-  Document any new option with the same rule.
-- Interpolation covers exactly the five **global** options: status-left,
-  status-right, window-status-format, window-status-current-format,
-  pane-border-format.
-- Loading the plugin twice must change nothing: hooks are registered
-  additively but idempotently, and interpolation only rewrites when a
-  placeholder is present.
+- **Native formats, not theme rewriting**: automatically register the four
+  `@attention_*` scope formats on valid state use; the optional TPM adapter
+  registers the same formats before first state use. Themes consume
+  `#{T:@attention_*}` directly. Use `T:`, not `E:`, to expand current epoch
+  `%s` before scope loops and minimize nesting. tmux ≥ 3.3 is required for its
+  100-level format nesting limit; 3.2 can silently misclassify stale work in
+  nested themes. Templates are fully inline: no intermediate `@attention_fmt_*`
+  state options. Never rewrite status/pane-border options or embed `#()` render
+  jobs or installation paths in these formats. Before registration the formats
+  are blank, which is expected before tracked work.
+- **Live icons**: fill in the six global `@attention_icon_<state>` defaults
+  only when unset on each valid state use or plugin load, and reference the
+  options dynamically in native formats. Preserve explicitly empty overrides;
+  idle is intentionally empty by default. Icon changes must work before or
+  after format registration. Unsetting an icon option restores its default on
+  the next valid state use or plugin load.
+- Setup is idempotent. Check actual hook arrays on each valid state invocation
+  or plugin load: repair handlers removed by a config reload even when our
+  marker remains. Preserve unrelated hooks, use deterministic free slots for
+  concurrent first use, and refresh on install relocation/version changes.
+  Never perform setup when sourcing helpers/formats, rendering icons, showing
+  help, or executing outside-tmux state no-ops.
+- Bindings belong to the user's tmux config, not CLI/plugin setup. Document
+  opt-in `display-popup`/`run-shell` bindings calling the public CLI.
 - `attention_option` distinguishes *set to empty* (user disabling an
   icon/binding) from *unset* (use default). Don't replace it with
   `${var:-default}`.
