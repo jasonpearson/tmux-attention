@@ -48,11 +48,6 @@ sort_mode() {
   esac
 }
 
-# The active view; anything unrecognized falls back to the sessions tree.
-view_mode() {
-  printf '%s' "$PICKER_VIEW"
-}
-
 # Membership test against $EXPANDED, the space-separated expanded-session
 # list (set by list_rows from @attention_picker_expanded).
 session_expanded() {
@@ -153,7 +148,7 @@ picker_keys() {
 # are reference material, the state below them is the live fact.
 header_text() {
   local h keys view labels NL=$'\n' DIM=$'\033[90m' OFF=$'\033[0m'
-  view="$(view_mode)"
+  view="$PICKER_VIEW"
   keys='enter: jump'
   # nothing expands in the flat panes view, so drop the hint there
   [ -n "$expand_key" ] && [ "$view" = sessions ] && keys="$keys  |  $expand_key: expand"
@@ -396,7 +391,7 @@ list_rows() {
   tmux list-sessions >/dev/null 2>&1 || return 0
   IFS="$TAB" read -r HOST HOST_SHORT \
     <<<"$(tmux display-message -p "#{host}${TAB}#{host_short}")"
-  VIEW="$(view_mode)"
+  VIEW="$PICKER_VIEW"
   MODE="$(sort_mode)"
   TIMEOUT="$(stale_timeout_seconds)"
   NOW="$(date +%s)"
@@ -431,6 +426,7 @@ kill_target() {
 
 # View belongs to this invocation, never to the tmux server. Callbacks carry
 # --panes explicitly; directory handoffs use --sessions even on a cold server.
+# PICKER_VIEW is only ever "sessions" or "panes".
 PICKER_VIEW=sessions
 FORCE_VIEW=0
 case "${1:-}" in
@@ -446,7 +442,7 @@ case "${1:-}" in
     ;;
   --toggle)
     # the flat panes view has no hierarchy to expand
-    [ "$(view_mode)" = panes ] && exit 0
+    [ "$PICKER_VIEW" = panes ] && exit 0
     # fzf field expansions can carry the trailing delimiter; ids never
     # contain whitespace, so strip any.
     target="$(printf '%s' "${2:-}" | tr -d '[:space:]')"

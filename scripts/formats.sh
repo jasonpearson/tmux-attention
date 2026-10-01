@@ -73,7 +73,9 @@ ensure_icon_formats() {
     name="@attention_icon_$state"
     case "$options" in
       *$'\n'"$name "*) ;;
-      *) tmux set-option -goq "$name" "$(state_icon "$state")" || return 1 ;;
+      # The snapshot already proved the option unset: write the literal
+      # default rather than rediscovering that through state_icon's lookups.
+      *) tmux set-option -goq "$name" "$(state_icon_default "$state")" || return 1 ;;
     esac
   done
   case "$options" in *$'\n'"@attention_formats_version $marker"$'\n'*) return 0 ;; esac

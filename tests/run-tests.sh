@@ -657,6 +657,21 @@ assert_eq 'new-session on a missing directory errors' "$?" 1
 assert_eq 'new-session on a missing directory creates nothing' \
   "$(T list-sessions -F '#{session_name}' | grep -c .)" "$sessions_before"
 
+# A directory that exists but cannot be entered (no search permission) must
+# error and create nothing, not close the popup with no message. Root ignores
+# the permission bits, so skip the check there.
+if [ "$(id -u)" -ne 0 ]; then
+  mkdir -p "$TMPROOT/locked"
+  chmod 000 "$TMPROOT/locked"
+  sessions_before="$(T list-sessions -F '#{session_name}' | grep -c .)"
+  inside "$B1" bash "$NEWSESSION" "$TMPROOT/locked" 2>/dev/null
+  locked_rc=$?
+  chmod 755 "$TMPROOT/locked"
+  assert_eq 'new-session on an unreadable directory errors' "$locked_rc" 1
+  assert_eq 'new-session on an unreadable directory creates nothing' \
+    "$(T list-sessions -F '#{session_name}' | grep -c .)" "$sessions_before"
+fi
+
 # the CLI delegates: this is the entry point a shell alias would use
 inside "$B1" "$BIN" "$TMPROOT/cli"
 assert_eq 'tmux-attention DIR rejects a missing directory' \

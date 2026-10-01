@@ -223,6 +223,38 @@ done
 detach
 wait_result 0
 
+# A directory source that exits non-zero must not discard a selection fzf
+# accepted: find hitting a permission-denied subtree exits 1, and a tool that
+# ignores SIGPIPE exits non-zero when an early pick closes its stdout. The
+# source's own stderr must also stay off fzf's screen. Sessions exist by now,
+# so the navigator opens on sessions; cycle to the directory view.
+export TMUX_ATTENTION_DIR_COMMAND="{ printf '%s\\n' '$WORK/projects/sample'; printf 'noise\\n' >&2; } ; exit 1"
+launch
+wait_screen 'view: sessions'
+D send-keys -t "$PANE" BTab
+wait_screen 'view: panes'
+D send-keys -t "$PANE" BTab
+wait_screen 'directories >'
+wait_screen "$WORK/projects/sample"
+D send-keys -t "$PANE" Enter
+wait_attached
+[ "$(T list-clients -F '#{session_name}')" = sample ] || fail 'a non-zero directory source discarded the selection'
+detach
+wait_result 0
+
+# An empty source (or no match) exits 0 on Enter, like the sessions view —
+# not a silent failure status inside the popup.
+export TMUX_ATTENTION_DIR_COMMAND='exit 0'
+launch
+wait_screen 'view: sessions'
+D send-keys -t "$PANE" BTab
+wait_screen 'view: panes'
+D send-keys -t "$PANE" BTab
+wait_screen 'directories >'
+D send-keys -t "$PANE" Enter
+wait_result 0
+export TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/sample'"
+
 # Starting with sessions, abort and a full round trip both keep the real TTY.
 launch
 wait_screen 'view: sessions'

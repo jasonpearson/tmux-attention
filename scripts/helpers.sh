@@ -63,16 +63,41 @@ attention_tmux_quote() {
   printf '"%s"' "$value"
 }
 
+# PATH entries the seen hook needs: where this invocation found tmux, and the
+# bash running it (so `env bash` in the handler resolves the same interpreter).
+# Resolved to absolute directories; identical ones collapse to a single entry.
+attention_tool_dirs() {
+  local tmux_dir bash_dir
+  tmux_dir="$(type -P tmux)" || return 1
+  tmux_dir="$(CDPATH= cd -P "${tmux_dir%/*}" 2>/dev/null && pwd)" || return 1
+  bash_dir="${BASH:-}"
+  case "$bash_dir" in
+    */*) bash_dir="$(CDPATH= cd -P "${bash_dir%/*}" 2>/dev/null && pwd)" || bash_dir='' ;;
+    *) bash_dir='' ;;
+  esac
+  if [ -n "$bash_dir" ] && [ "$bash_dir" != "$tmux_dir" ]; then
+    printf '%s:%s' "$tmux_dir" "$bash_dir"
+  else
+    printf '%s' "$tmux_dir"
+  fi
+}
+
 # Automatic setup for valid tracking/navigation use (and the optional plugin).
 # Only internal native formats, icon defaults, and seen hooks are registered;
 # never rewrite themes or install bindings. Sourcing/help/rendering are read-only.
-# The real handler path and PATH refresh callbacks after install relocation.
+# The handler path and the tool directories refresh callbacks after relocation.
 ensure_server_hooks() {
-  local handler="${BASH_SOURCE[0]%/*}/seen.sh" marker
+  local handler="${BASH_SOURCE[0]%/*}/seen.sh" marker tools
   # shellcheck source=formats.sh
   source "${BASH_SOURCE[0]%/*}/formats.sh"
   ensure_icon_formats || return 1
-  marker="2:$handler:$PATH"
+  # The hook runs under the server's environment, which may predate tool
+  # activation (mise, Homebrew), so the handler is told where this invocation's
+  # tmux and bash live. Only those two directories are recorded: baking the
+  # caller's whole PATH made every caller with a different PATH (agent hooks,
+  # a popup, a TPM load) rewrite all four hooks and flip the handler's PATH.
+  tools="$(attention_tool_dirs)"
+  marker="3:$handler:$tools"
   local hooks hook line key owned index command installed=' ' count=0
   hooks="$(tmux show-hooks -g 2>/dev/null)" || return 1
   # A config reload may replace a hook array without clearing our marker.
@@ -91,14 +116,20 @@ ensure_server_hooks() {
     done
     [ "$count" -eq 4 ] && return 0
   fi
-  command="export PATH=$(attention_shell_quote "${PATH//#/##}"); exec $(attention_shell_quote "${handler//#/##}") # tmux-attention:seen"
+  # run-shell runs under the server's default-shell, so the command uses only
+  # syntax sh, bash, zsh, fish and tcsh share: env rather than export, and a
+  # literal "$PATH" for the hook's shell (tmux's parser sees \$).
+  command="exec /usr/bin/env PATH=$(attention_shell_quote "${tools//#/##}"):\"\$PATH\" $(attention_shell_quote "${handler//#/##}") # tmux-attention:seen"
   command="run-shell $(attention_tmux_quote "$command")"
   for hook in after-select-pane after-select-window client-session-changed client-attached; do
     owned=''
     while IFS= read -r line; do
       case "$line" in "$hook["*) ;; *) continue ;; esac
+      # Ours carry the marker comment; the 0.1 plugin registered exactly
+      # `run-shell "<checkout>/scripts/seen.sh"` from whatever directory TPM
+      # or a fork cloned it into, so match that shape rather than one name.
       case "$line" in
-        *'tmux-attention:seen'* | *'/tmux-attention/scripts/seen.sh'*)
+        *'tmux-attention:seen'* | *' run-shell "'*'/scripts/seen.sh"')
           key="${line%% *}"
           if [ -z "$owned" ]; then
             owned="$key"
@@ -123,8 +154,9 @@ ensure_server_hooks() {
   tmux set-option -g @attention_hooks_version "$marker"
 }
 
+# Callers run ensure_server_hooks themselves once the server is known to exist
+# (go_to_dir after creating the first session; the picker before listing).
 attention_go_to() {
-  ensure_server_hooks || return 1
   if [ -n "${TMUX:-}" ]; then
     tmux switch-client -t "$1"
   else
@@ -147,14 +179,23 @@ state_priority() {
   esac
 }
 
+# The built-in icons. Setup copies these into unset @attention_icon_<state>
+# options; rendering reads the options (state_icon), so overrides stay live.
+state_icon_default() {
+  case "$1" in
+    blocked) printf '🟠' ;;
+    failed)  printf '☠️' ;;
+    done)    printf '🔥' ;;
+    unknown) printf '❓' ;;
+    working) printf '⚙️' ;;
+    idle)    ;; # intentionally empty
+  esac
+}
+
 state_icon() {
   case "$1" in
-    blocked) attention_option '@attention_icon_blocked' '🟠' ;;
-    failed)  attention_option '@attention_icon_failed' '☠️' ;;
-    done)    attention_option '@attention_icon_done' '🔥' ;;
-    unknown) attention_option '@attention_icon_unknown' '❓' ;;
-    working) attention_option '@attention_icon_working' '⚙️' ;;
-    idle)    attention_option '@attention_icon_idle' '' ;;
+    blocked | failed | done | unknown | working | idle)
+      attention_option "@attention_icon_$1" "$(state_icon_default "$1")" ;;
   esac
 }
 

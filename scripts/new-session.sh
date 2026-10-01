@@ -102,6 +102,11 @@ dir_header() {
 # replaces the source entirely (e.g. 'zoxide query --list' to offer only
 # directories you have actually visited), in which case root/skip/hidden no
 # longer apply — they configure a walk that is no longer happening.
+#
+# Returns fzf's own status once the list reached the user: 0 with the chosen
+# directory on stdout, 1 for no match, 130 for abort. 2 means the picker could
+# not run (fzf too old, or a source that failed with nothing chosen) and a
+# message has been shown.
 pick_dir() {
   local cmd arg view_key cancel_key
   cmd="$(attention_env TMUX_ATTENTION_DIR_COMMAND '')"
@@ -115,19 +120,26 @@ pick_dir() {
   # cancel key: fzf's own abort returns to the terminal (esc does the same)
   [ -n "$cancel_key" ] && args+=(--bind "$cancel_key:abort")
   if [ -n "$cmd" ]; then
-    # Preserve source failures, but SIGPIPE is normal when the user selects
-    # or cycles before a streaming source has finished. fzf abort wins too.
-    sh -c "$cmd" | fzf "${args[@]}"
+    # fzf's verdict decides. A selection stands even when a streaming source
+    # exits non-zero (find after a permission-denied subtree, a tool that
+    # ignores SIGPIPE and is cut off by an early pick), and the source's
+    # stderr must not write over fzf's screen. Its exit status only serves to
+    # explain an empty or unmatched list: SIGPIPE (141) is normal when the
+    # user picks before the source has finished, and an abort stays quiet.
+    sh -c "$cmd" 2>/dev/null | fzf "${args[@]}"
     local statuses=("${PIPESTATUS[@]}")
-    [ "${statuses[1]}" -eq 0 ] || return "${statuses[1]}"
-    case "${statuses[0]}" in
-      0 | 141) return 0 ;;
-      *) return "${statuses[0]}" ;;
+    case "${statuses[1]}:${statuses[0]}" in
+      1:0 | 1:141) return 1 ;;
+      1:*)
+        msg "directory source exited ${statuses[0]}: $cmd"
+        return 2
+        ;;
+      *) return "${statuses[1]}" ;;
     esac
   fi
   if ! fzf_walks; then
     msg 'directory picker needs fzf >= 0.48, or set TMUX_ATTENTION_DIR_COMMAND'
-    return 1
+    return 2
   fi
   while IFS= read -r arg; do args+=("$arg"); done < <(walker_args)
   # No stdin, and no inherited default command: either one would bypass fzf's
@@ -140,10 +152,11 @@ pick_dir() {
 # because tmux otherwise matches session names by prefix — picking ~/bet
 # would land you in "beta".
 go_to_dir() {
-  local dir name
+  local dir name shown
   dir="$(expand_tilde "$1")"
+  shown="$dir"
   [ -d "$dir" ] || {
-    msg "no such directory: $dir"
+    msg "no such directory: $shown"
     return 1
   }
   # Even after --, cd treats a bare "-" as OLDPWD (and prints the path).
@@ -152,7 +165,12 @@ go_to_dir() {
     /*) ;;
     *) dir="./$dir" ;;
   esac
-  dir="$(CDPATH= cd -- "$dir" && pwd -P)" || return 1
+  # A directory that exists but cannot be entered (no search permission) must
+  # say so where the user can see it; cd's own stderr dies with the popup.
+  dir="$(CDPATH= cd -- "$dir" 2>/dev/null && pwd -P)" || {
+    msg "cannot enter directory: $shown"
+    return 1
+  }
   # tmux itself rewrites "." and ":" in a session name (both are target
   # separators) — do it up front, so has-session looks for the same name
   # new-session would create.
@@ -168,6 +186,8 @@ go_to_dir() {
       return 1
     }
   fi
+  # The one setup on this path: the session above may have just started the
+  # server, and attention_go_to does not repeat it.
   ensure_server_hooks || return 1
   attention_go_to "=$name"
 }
@@ -190,9 +210,6 @@ attention_require tmux || exit 1
 if [ -z "${TMUX:-}" ] || [ "$#" -eq 0 ]; then
   attention_require_terminal || exit 1
 fi
-if tmux list-sessions >/dev/null 2>&1; then
-  ensure_server_hooks || exit 1
-fi
 
 dir="${1:-}"
 if [ "$#" -eq 0 ]; then
@@ -201,7 +218,7 @@ if [ "$#" -eq 0 ]; then
   rc=$?
   case "$rc" in
     0) ;;
-    130) exit 0 ;;
+    1 | 130) exit 0 ;; # no match or user abort, as in picker.sh
     *) exit "$rc" ;;
   esac
   # Top-level exec keeps attach connected to the terminal, even on a cold

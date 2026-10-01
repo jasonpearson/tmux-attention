@@ -6,7 +6,7 @@ assert_contains 'version identifies the installed release' \
   "$("$BIN" --version)" "tmux-attention $(<"$DIR/VERSION")"
 assert_eq 'help does not advertise an init command' \
   "$("$BIN" --help | grep -Ec 'tmux-attention init|^  init[[:space:]]')" 0
-for args in 'run' 'init extra' '--help extra' '--version extra' 'working one two' '--' '-- one two' '--bogus'; do
+for args in 'run' 'init extra' '--help extra' 'help extra' '--version extra' 'working one two' '--' '-- one two' '--bogus'; do
   # Intentional word splitting: every case consists of simple fixed words.
   "$BIN" $args >/dev/null 2>&1
   assert_eq "invalid arguments fail: $args" "$?" 1
@@ -18,18 +18,66 @@ env -u TMUX -u TMUX_PANE "$BIN" done "$B1"
 assert_eq 'outside state command ignores even an explicit pane' "$(state_of "$B1")" working
 inside "$B1" "$BIN" idle
 
-# Directory disambiguation at the public boundary. init is an ordinary name,
-# not a reserved command and does not require the -- escape used for run.
-mkdir -p "$TEST_TMP/args/run" "$TEST_TMP/args/--header" "$TEST_TMP/args/pick" "$TEST_TMP/args/init"
+# `help` is a help alias (like -h/--help), printed on a terminal or not, and
+# takes no arguments; `-- help` below still reaches it as a directory name.
+assert_contains 'help prints usage' "$(inside "$B1" "$BIN" help)" 'usage: tmux-attention'
+inside "$B1" "$BIN" help >/dev/null
+assert_eq 'help exits 0' "$?" 0
+
+# --version reads the file even when it has no trailing newline (a packager or
+# editor may strip it); read returns 1 at EOF but the version was still filled.
+nonl="$TEST_TMP/nonewline"
+mkdir -p "$nonl/bin" "$nonl/scripts"
+cp "$BIN" "$nonl/bin/"
+cp "$DIR"/scripts/*.sh "$nonl/scripts/"
+printf '9.9.9' > "$nonl/VERSION"
+assert_eq 'version reads a VERSION without a trailing newline' \
+  "$(env -u TMUX -u TMUX_PANE "$nonl/bin/tmux-attention" --version)" 'tmux-attention 9.9.9'
+env -u TMUX -u TMUX_PANE "$nonl/bin/tmux-attention" --version >/dev/null
+assert_eq 'version without a trailing newline exits 0' "$?" 0
+
+# `run` on a server that cannot be set up (tmux < 3.3) still runs the wrapped
+# command and preserves its exit code, leaving the pane untracked — the same
+# refusal the state commands make on that server, instead of tracking anyway
+# and printing the setup error into the wrapped command's own stderr.
+T set -p -t "$B1" @attention_state unknown
+fv_before="$(T show-options -gqv @attention_formats_version)"
+T set-option -gu @attention_formats_version
+old_bin="$TEST_TMP/run-old-tmux"
+mkdir -p "$old_bin"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '%s\n' 'if [ "$#" -eq 3 ] && [ "$1" = display-message ] && [ "$2" = -p ] && [ "$3" = "#{version}" ]; then'
+  printf '%s\n' "  printf '3.2\\n'" 'else'
+  printf '  exec %q "$@"\nfi\n' "$(type -P tmux)"
+} > "$old_bin/tmux"
+chmod +x "$old_bin/tmux"
+run_out="$(inside "$B1" env PATH="$old_bin:$PATH" "$BIN" run -- sh -c 'printf OUT; exit 7' 2>/dev/null)"
+run_rc=$?
+assert_eq 'run on an unsupported server still runs the command' "$run_out" OUT
+assert_eq 'run on an unsupported server preserves the exit code' "$run_rc" 7
+assert_eq 'run on an unsupported server leaves the pane untracked' "$(state_of "$B1")" unknown
+run_err="$(inside "$B1" env PATH="$old_bin:$PATH" "$BIN" run -- true 2>&1 >/dev/null)"
+assert_contains 'run on an unsupported server reports the requirement' \
+  "$run_err" 'requires tmux >= 3.3'
+T set-option -g @attention_formats_version "$fv_before"
+T set -pu -t "$B1" @attention_state
+
+# Directory disambiguation at the public boundary. init and pick are ordinary
+# names needing no escape; run and help are reserved words, so a directory of
+# either name is reached through -- (as is --header, which starts with a dash).
+mkdir -p "$TEST_TMP/args/run" "$TEST_TMP/args/--header" "$TEST_TMP/args/pick" \
+  "$TEST_TMP/args/init" "$TEST_TMP/args/help"
 (
   cd "$TEST_TMP/args" || exit 1
   inside "$B1" "$BIN" -- run
   inside "$B1" "$BIN" -- --header
+  inside "$B1" "$BIN" -- help
   inside "$B1" "$BIN" pick
   inside "$B1" "$BIN" init
 )
 T switch-client -c "$CLIENT" -t beta
-for name in run --header pick init; do
+for name in run --header help pick init; do
   assert_eq "literal directory creates session: $name" \
     "$(T has-session -t "=$name" 2>/dev/null && echo yes)" yes
   assert_eq "literal directory roots session correctly: $name" \

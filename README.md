@@ -138,7 +138,7 @@ tmux-attention clear   [pane_id]   # stop tracking
 tmux-attention toggle  [pane_id]   # manually mark/unmark
 tmux-attention run [--] <command> [args...]
 
-tmux-attention -h, --help
+tmux-attention -h, --help, help
 tmux-attention --version
 ```
 
@@ -304,15 +304,19 @@ checkout path or shell alias is needed.
 
 ## Migrating
 
-### From init-based UI
+### From the 0.1 tmux plugin
 
 - Upgrade tmux to **3.3 or newer**. Native aggregation needs its larger format
   nesting limit; tmux 3.2 can silently misrender icons in nested theme formats.
 - Replace `#{attention_pane}`, `#{attention_window}`, `#{attention_session}`,
   and `#{attention_global}` with `#{T:@attention_pane}`,
   `#{T:@attention_window}`, `#{T:@attention_session}`, and `#{T:@attention_global}`.
-- Remove `run-shell 'tmux-attention init'` (including shim/`mise exec` variants).
-  `init` is no longer a command; it is an ordinary directory name.
+- There was never a `tmux-attention init` command: the 0.1 plugin configured
+  itself when your plugin manager sourced `attention.tmux`, rewriting your theme
+  and installing bindings as a side effect. `attention.tmux` still loads, but no
+  longer does either, so nothing needs to be "deinitialized" — just undo those
+  two side effects directly, as the next two bullets describe. (`init` itself is
+  now an ordinary directory name.)
 - Replace `@attention_picker_key` and `@attention_toggle_key` with your own
   [tmux bindings](#opt-in-bindings). Remove old generated bindings with
   `unbind-key a` / `unbind-key h` if they still belong to tmux-attention,

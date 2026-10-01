@@ -19,7 +19,7 @@ usage: tmux-attention [directory]
 
   (no arguments)      navigate sessions, panes and directories on a terminal
   directory           create/reuse its session; use . for the current directory
-  -- directory        treat a reserved name (such as run) as a directory
+  -- directory        treat a reserved name (run, help) as a directory
 
   working  [pane_id]   process started/resumed running
   blocked  [pane_id]   process needs input/approval (seen rule applies)
@@ -30,7 +30,7 @@ usage: tmux-attention [directory]
   clear    [pane_id]   remove tracking entirely
   toggle   [pane_id]   manually mark/unmark, bypassing the seen rule
   run [--] <command>   working -> run command -> done/failed
-  -h, --help          show this help
+  -h, --help, help    show this help
   --version           show the installed version
 
 Navigation switches the client inside tmux and attaches outside it. With no
@@ -67,14 +67,16 @@ record() {
 
 cmd="${1:-}"
 case "$cmd" in
-  -h | --help)
-    [ "$#" -eq 1 ] || usage_error '--help takes no arguments'
+  -h | --help | help)
+    [ "$#" -eq 1 ] || usage_error 'help takes no arguments'
     usage
     exit 0
     ;;
   --version)
     [ "$#" -eq 1 ] || usage_error '--version takes no arguments'
-    IFS= read -r version < "$CURRENT_DIR/VERSION" || exit 1
+    # read returns 1 at EOF even after filling the variable: a VERSION file
+    # without a trailing newline still has a version in it.
+    IFS= read -r version < "$CURRENT_DIR/VERSION" || [ -n "${version:-}" ] || exit 1
     printf 'tmux-attention %s\n' "$version"
     exit 0
     ;;
@@ -88,8 +90,13 @@ case "$cmd" in
       "$@"
       exit "$?"
     fi
-    # Tracking must never prevent the wrapped command from running.
-    ensure_server_hooks
+    # Tracking must never prevent the wrapped command from running. A server
+    # setup refuses (tmux < 3.3) reports once and leaves the command untracked,
+    # as the state commands refuse on that server too.
+    if ! ensure_server_hooks; then
+      "$@"
+      exit "$?"
+    fi
     set_pane_state "$pane" working
     "$@"
     rc="$?"
