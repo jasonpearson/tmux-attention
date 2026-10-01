@@ -16,7 +16,7 @@ if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; th
 fi
 out=${1:-"$ROOT/dist"}
 mkdir -p "$out"
-out=$(cd "$out" && pwd)
+out=$(CDPATH= cd "$out" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/tmux-attention-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/root/bin" "$work/root/scripts"

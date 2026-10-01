@@ -116,6 +116,45 @@ assert_eq 'concurrent state commands do not duplicate hooks' \
   "$(T show-hooks -g | grep -c 'seen\.sh')" 4
 inside "$A1" "$BIN" clear
 
+# Upgrade from 0.1, including a server where the previous setup already left
+# legacy callbacks alongside the new ones. tmux serializes the plain path
+# without quotes and retains quotes around the path containing spaces.
+legacy_plain="$TEST_TMP/old-checkout/scripts/seen.sh"
+legacy_quoted="$TEST_TMP/old checkout/scripts/seen.sh"
+for migration in legacy-only leftover-legacy; do
+  if [ "$migration" = legacy-only ]; then
+    legacy_slot=100
+    while IFS= read -r line; do
+      case "$line" in
+        *'tmux-attention:seen'*) T set-hook -gu "${line%% *}" ;;
+      esac
+    done < <(T show-hooks -g)
+    T set -gu @attention_hooks_version
+  else
+    legacy_slot=200
+    marker="$(T show-options -gqv @attention_hooks_version)"
+    T set -g @attention_hooks_version "3:${marker#*:}"
+  fi
+  for hook in after-select-pane after-select-window client-session-changed client-attached; do
+    T set-hook -g "$hook[$legacy_slot]" "run-shell \"$legacy_plain\""
+    T set-hook -g "$hook[$((legacy_slot + 1))]" "run-shell \"$legacy_quoted\""
+  done
+  # A different command that mentions the same path must remain untouched.
+  T set-hook -g 'after-select-pane[2]' "run-shell \"printf '%s' '$legacy_plain'\""
+  unrelated_hook="$(T show-hooks -g | grep '^after-select-pane\[2\] ')"
+  inside "$A1" "$BIN" working
+  hooks="$(T show-hooks -g)"
+  assert_eq "$migration: exactly four current seen hooks remain" \
+    "$(printf '%s\n' "$hooks" | grep -c 'tmux-attention:seen')" 4
+  assert_eq "$migration: legacy callbacks are removed" \
+    "$(printf '%s\n' "$hooks" | grep -vF "$unrelated_hook" | grep -c '/scripts/seen.sh')" 4
+  assert_contains "$migration: unrelated command survives unchanged" "$hooks" "$unrelated_hook"
+  assert_contains "$migration: another plugin's occupied slot survives" "$hooks" '@other_hook'
+  inside "$A1" "$BIN" clear
+  assert_eq "$migration: repeated setup leaves hooks unchanged" "$(T show-hooks -g)" "$hooks"
+  T set-hook -gu 'after-select-pane[2]'
+done
+
 # --- native formats: no setup command or theme rewriting -------------------
 
 T set -g status-left 'L:#{T:@attention_session}#{T:@attention_global}|'

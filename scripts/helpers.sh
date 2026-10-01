@@ -97,7 +97,8 @@ ensure_server_hooks() {
   # caller's whole PATH made every caller with a different PATH (agent hooks,
   # a popup, a TPM load) rewrite all four hooks and flip the handler's PATH.
   tools="$(attention_tool_dirs)"
-  marker="3:$handler:$tools"
+  # Revisit servers initialized before legacy unquoted hooks were recognized.
+  marker="4:$handler:$tools"
   local hooks hook line key owned index command installed=' ' count=0
   hooks="$(tmux show-hooks -g 2>/dev/null)" || return 1
   # A config reload may replace a hook array without clearing our marker.
@@ -127,9 +128,10 @@ ensure_server_hooks() {
       case "$line" in "$hook["*) ;; *) continue ;; esac
       # Ours carry the marker comment; the 0.1 plugin registered exactly
       # `run-shell "<checkout>/scripts/seen.sh"` from whatever directory TPM
-      # or a fork cloned it into, so match that shape rather than one name.
+      # or a fork cloned it into. show-hooks drops the quotes on simple paths;
+      # recognize both forms, keeping the absolute path and command end intact.
       case "$line" in
-        *'tmux-attention:seen'* | *' run-shell "'*'/scripts/seen.sh"')
+        *'tmux-attention:seen'* | *' run-shell /'*'/scripts/seen.sh' | *' run-shell "/'*'/scripts/seen.sh"')
           key="${line%% *}"
           if [ -z "$owned" ]; then
             owned="$key"

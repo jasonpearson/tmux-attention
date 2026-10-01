@@ -19,6 +19,12 @@ bash "$ROOT/scripts/package.sh" "$work/output with spaces" >/dev/null
 bash "$ROOT/scripts/package.sh" "$work/second output" >/dev/null
 cmp "$work/output with spaces/$archive" "$work/second output/$archive" || fail 'repeat builds differ'
 (
+  cd "$work"
+  CDPATH=. bash "$ROOT/scripts/package.sh" 'relative output' >/dev/null
+)
+cmp "$work/output with spaces/$archive" "$work/relative output/$archive" || fail 'CDPATH broke relative package output'
+cmp "$work/output with spaces/SHA256SUMS" "$work/relative output/SHA256SUMS" || fail 'CDPATH broke relative package checksums'
+(
   cd "$work/output with spaces"
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum -c SHA256SUMS
