@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # fzf session picker: sessions ordered by the active sort mode, expandable
 # in place into their windows and panes, each row with its attention icon.
-# A view toggle swaps the tree for a flat list of every pane on the server.
+# The view key cycles sessions -> panes -> directories -> sessions.
 # Enter jumps to the selected session, window, or pane; the (configurable)
 # kill key confirms and then kills whatever the selected row is, reloading the
-# list; the new key hands over to new-session.sh. Inside tmux enter switches
+# list. The directory view lives in new-session.sh. Inside tmux enter switches
 # the client; run from a plain shell it attaches, so the picker doubles as a
 # standalone session-attach command.
 #
@@ -12,13 +12,13 @@
 #   picker.sh --list          print the rows (used by fzf reload)
 #   picker.sh --toggle <id>   expand/collapse the session owning <id>
 #   picker.sh --cycle-sort    flip the sort mode: attention <-> name
-#   picker.sh --cycle-view    flip the view: sessions <-> panes
+#   picker.sh --panes         start a local flat-pane view
 #   picker.sh --header        print the header line (used by fzf transform-header)
 #   picker.sh --kill <id>     kill session ($n), window (@n) or pane (%n)
 #   picker.sh --kill-confirm <id>
 #                             prompt on the terminal, then --kill on y/Y
 
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CURRENT_DIR="$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 source "$CURRENT_DIR/helpers.sh"
 
@@ -42,17 +42,9 @@ LIST_FMT="#{session_id}${TAB}#{session_name}${TAB}#{session_activity}${TAB}#{win
 # "recent" — attention's recency tie-break covers it) falls back to
 # attention.
 sort_mode() {
-  case "$(attention_option '@attention_picker_sort' 'attention')" in
+  case "$(attention_option '@attention_picker_sort' "$(attention_env TMUX_ATTENTION_PICKER_SORT attention)")" in
     name) printf 'name' ;;
     *) printf 'attention' ;;
-  esac
-}
-
-# The active view; anything unrecognized falls back to the sessions tree.
-view_mode() {
-  case "$(attention_option '@attention_picker_view' 'sessions')" in
-    panes) printf 'panes' ;;
-    *) printf 'sessions' ;;
   esac
 }
 
@@ -87,8 +79,8 @@ title_suffix() {
   return 0
 }
 
-# render_icon against the icons pre-fetched by list_rows: state_icon costs a
-# tmux round-trip and this runs once per pane.
+# Render with the icons pre-fetched by list_rows: state_icon costs a tmux
+# round-trip and this runs once per pane.
 icon_for() {
   local icon=''
   case "$1" in
@@ -142,12 +134,11 @@ gutter_icon() {
 }
 
 picker_keys() {
-  expand_key="$(attention_option '@attention_picker_expand_key' 'tab')"
-  sort_key="$(attention_option '@attention_picker_sort_key' 'ctrl-s')"
-  view_key="$(attention_option '@attention_picker_view_key' 'shift-tab')"
-  kill_key="$(attention_option '@attention_picker_kill_key' 'K')"
-  new_key="$(attention_option '@attention_picker_new_key' 'ctrl-n')"
-  cancel_key="$(attention_option '@attention_picker_cancel_key' 'ctrl-c')"
+  expand_key="$(attention_env TMUX_ATTENTION_PICKER_EXPAND_KEY tab)"
+  sort_key="$(attention_env TMUX_ATTENTION_PICKER_SORT_KEY ctrl-s)"
+  view_key="$(attention_env TMUX_ATTENTION_PICKER_VIEW_KEY shift-tab)"
+  kill_key="$(attention_env TMUX_ATTENTION_PICKER_KILL_KEY K)"
+  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
 }
 
 # Two lines: what you can press, then what the list is currently showing.
@@ -157,21 +148,18 @@ picker_keys() {
 # are reference material, the state below them is the live fact.
 header_text() {
   local h keys view labels NL=$'\n' DIM=$'\033[90m' OFF=$'\033[0m'
-  view="$(view_mode)"
+  view="$PICKER_VIEW"
   keys='enter: jump'
   # nothing expands in the flat panes view, so drop the hint there
   [ -n "$expand_key" ] && [ "$view" = sessions ] && keys="$keys  |  $expand_key: expand"
   if [ -n "$view_key" ]; then
-    # reached from the directory picker, the view key round-trips back there
-    if [ "${FROM_DIR:-0}" -eq 1 ]; then
-      keys="$keys  |  $view_key: directories"
-    else
-      keys="$keys  |  $view_key: view"
-    fi
+    case "$view" in
+      sessions) keys="$keys  |  $view_key: panes" ;;
+      panes) keys="$keys  |  $view_key: directories" ;;
+    esac
   fi
   [ -n "$sort_key" ] && keys="$keys  |  $sort_key: sort"
   [ -n "$kill_key" ] && keys="$keys  |  $kill_key: kill"
-  [ -n "$new_key" ] && keys="$keys  |  $new_key: new"
   [ -n "$cancel_key" ] && keys="$keys  |  $cancel_key: quit"
   h="${DIM}${keys}${OFF}${NL}view: ${view}  |  sort: $(sort_mode)"
   # a blank spacer keeps the list from sitting flush against the hints;
@@ -244,7 +232,7 @@ flush_session() {
 
 # stdin: LIST_FMT lines, already grouped session -> window -> pane in index
 # order by tmux. stdout: "priority TAB activity TAB name TAB seq TAB id TAB
-# display" rows. Aggregates fold pane states exactly like best_state:
+# display" rows. Aggregates follow the same priorities as the native formats:
 # untracked panes never count, and stale working downgrades to unknown.
 build_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since title
@@ -398,11 +386,12 @@ sort_rows() {
 # the panes view's aligned column-label line (nothing in the sessions
 # view), for header_text.
 list_rows() {
-  local HOST HOST_SHORT VIEW MODE TIMEOUT NOW EXPANDED IND_C IND_E
+  local HOST HOST_SHORT VIEW MODE TIMEOUT NOW EXPANDED IND_C IND_E rows
   local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE GUTTER
+  tmux list-sessions >/dev/null 2>&1 || return 0
   IFS="$TAB" read -r HOST HOST_SHORT \
     <<<"$(tmux display-message -p "#{host}${TAB}#{host_short}")"
-  VIEW="$(view_mode)"
+  VIEW="$PICKER_VIEW"
   MODE="$(sort_mode)"
   TIMEOUT="$(stale_timeout_seconds)"
   NOW="$(date +%s)"
@@ -417,41 +406,43 @@ list_rows() {
   I_IDLE="$(state_icon idle)"
 
   GUTTER="$(icon_gutter)"
+  rows="$(tmux list-panes -a -F "$LIST_FMT")" || return 1
   if [ "$VIEW" = panes ]; then
-    tmux list-panes -a -F "$LIST_FMT" 2>/dev/null | build_pane_rows | sort_rows "$MODE" | cut -f5- | align_pane_rows "${1:-list}"
+    printf '%s\n' "$rows" | build_pane_rows | sort_rows "$MODE" | cut -f5- | align_pane_rows "${1:-list}"
   else
     [ "${1:-list}" = header ] && return 0
-    tmux list-panes -a -F "$LIST_FMT" 2>/dev/null | build_rows | sort_rows "$MODE" | cut -f5-
+    printf '%s\n' "$rows" | build_rows | sort_rows "$MODE" | cut -f5-
   fi
 }
 
 # Kill whatever an id points at: window (@n), pane (%n), or session ($n).
 kill_target() {
   case "$1" in
-    '@'*) tmux kill-window -t "$1" 2>/dev/null ;;
-    '%'*) tmux kill-pane -t "$1" 2>/dev/null ;;
-    *) tmux kill-session -t "$1" 2>/dev/null ;;
+    '@'*) tmux kill-window -t "$1" ;;
+    '%'*) tmux kill-pane -t "$1" ;;
+    *) tmux kill-session -t "$1" ;;
   esac
 }
 
-# Arrived from the directory picker (new-session.sh's view key): the view key
-# toggles back to it instead of cycling sessions<->panes, so the two pickers
-# form one shift-tab round-trip. Parsed before the case so fzf sub-invocations
-# (--header etc.) can carry it too.
-FROM_DIR=0
-if [ "${1:-}" = '--from-dir' ]; then
-  FROM_DIR=1
-  shift
-fi
+# View belongs to this invocation, never to the tmux server. Callbacks carry
+# --panes explicitly; directory handoffs use --sessions even on a cold server.
+# PICKER_VIEW is only ever "sessions" or "panes".
+PICKER_VIEW=sessions
+FORCE_VIEW=0
+case "${1:-}" in
+  --panes) PICKER_VIEW=panes; FORCE_VIEW=1; shift ;;
+  --sessions) FORCE_VIEW=1; shift ;;
+esac
 
 case "${1:-}" in
   --list)
+    attention_require tmux || exit 1
     list_rows
-    exit 0
+    exit "$?"
     ;;
   --toggle)
     # the flat panes view has no hierarchy to expand
-    [ "$(view_mode)" = panes ] && exit 0
+    [ "$PICKER_VIEW" = panes ] && exit 0
     # fzf field expansions can carry the trailing delimiter; ids never
     # contain whitespace, so strip any.
     target="$(printf '%s' "${2:-}" | tr -d '[:space:]')"
@@ -478,19 +469,13 @@ case "${1:-}" in
     exit 0
     ;;
   --cycle-sort)
+    tmux list-sessions >/dev/null 2>&1 || exit 0
     case "$(sort_mode)" in
       attention) next=name ;;
       *) next=attention ;;
     esac
     tmux set-option -g @attention_picker_sort "$next"
-    exit 0
-    ;;
-  --cycle-view)
-    case "$(view_mode)" in
-      panes) tmux set-option -g @attention_picker_view sessions ;;
-      *) tmux set-option -g @attention_picker_view panes ;;
-    esac
-    exit 0
+    exit "$?"
     ;;
   --header)
     picker_keys
@@ -501,7 +486,7 @@ case "${1:-}" in
     target="$(printf '%s' "${2:-}" | tr -d '[:space:]')"
     [ -n "$target" ] || exit 0
     kill_target "$target"
-    exit 0
+    exit "$?"
     ;;
   --kill-confirm)
     # The interactive kill. Bound via fzf execute (not execute-silent), so we
@@ -520,21 +505,11 @@ case "${1:-}" in
     read -r -n 1 reply
     printf '\n'
     case "$reply" in
-      y | Y) kill_target "$target" ;;
+      y | Y) kill_target "$target"; exit "$?" ;;
     esac
     exit 0
     ;;
 esac
-
-# Go to a session: switching the client when we are inside tmux (the popup
-# case), attaching when we are not (the picker run straight from a shell).
-go_to() {
-  if [ -n "${TMUX:-}" ]; then
-    tmux switch-client -t "$1" 2>/dev/null
-  else
-    tmux attach-session -t "$1" 2>/dev/null
-  fi
-}
 
 # Land the client directly on the selected target: select the window/pane
 # first, then switch, so arrival triggers the seen-rule focus hooks.
@@ -542,42 +517,34 @@ jump() {
   local target="$1" ids
   case "$target" in
     '@'*)
-      ids="$(tmux display-message -p -t "$target" '#{session_id}' 2>/dev/null)"
-      [ -n "$ids" ] || return 0
-      tmux select-window -t "$target" 2>/dev/null
-      go_to "$ids"
+      ids="$(tmux display-message -p -t "$target" '#{session_id}')" || return 1
+      [ -n "$ids" ] || return 1
+      tmux select-window -t "$target" || return 1
+      attention_go_to "$ids"
       ;;
     '%'*)
-      ids="$(tmux display-message -p -t "$target" "#{session_id}${TAB}#{window_id}" 2>/dev/null)"
-      [ -n "$ids" ] || return 0
-      tmux select-window -t "${ids#*"$TAB"}" 2>/dev/null
-      tmux select-pane -t "$target" 2>/dev/null
-      go_to "${ids%%"$TAB"*}"
+      ids="$(tmux display-message -p -t "$target" "#{session_id}${TAB}#{window_id}")" || return 1
+      [ -n "$ids" ] || return 1
+      tmux select-window -t "${ids#*"$TAB"}" || return 1
+      tmux select-pane -t "$target" || return 1
+      attention_go_to "${ids%%"$TAB"*}"
       ;;
     *)
-      go_to "$target"
+      attention_go_to "$target"
       ;;
   esac
 }
 
-if ! command -v fzf >/dev/null 2>&1; then
-  if [ -n "${TMUX:-}" ]; then
-    tmux display-message 'tmux-attention: session picker requires fzf (not found in PATH)'
-  else
-    printf 'tmux-attention: session picker requires fzf (not found in PATH)\n' >&2
-  fi
-  exit 0
+attention_require tmux || exit 1
+attention_require fzf || exit 1
+attention_require_terminal || exit 1
+if tmux list-sessions >/dev/null 2>&1; then
+  ensure_server_hooks || exit 1
+  # Every picker opens fully collapsed; only the sort mode persists.
+  tmux set-option -gu @attention_picker_expanded 2>/dev/null
+elif [ "$FORCE_VIEW" -eq 0 ]; then
+  exec "$NEW"
 fi
-
-# Run from a shell with no server up, there is nothing to pick from — and
-# every tmux call below would spill "no server running" instead.
-if ! tmux list-sessions >/dev/null 2>&1; then
-  printf 'tmux-attention: no tmux server running\n' >&2
-  exit 1
-fi
-
-# Every picker opens fully collapsed; only the sort mode persists.
-tmux set-option -gu @attention_picker_expanded 2>/dev/null
 
 picker_keys
 # panes-view rows are "id TAB icon TAB text": --with-nth shows everything
@@ -590,36 +557,23 @@ I_UNKNOWN="$(state_icon unknown)" I_WORKING="$(state_icon working)" I_IDLE="$(st
 GUTTER="$(icon_gutter)"
 fzf_args=(--reverse --delimiter "$TAB" --with-nth '2..' --header "$(header_text)")
 [ "$GUTTER" -gt 0 ] && fzf_args+=(--tabstop "$GUTTER")
-if [ -n "$expand_key" ]; then
-  fzf_args+=(--bind "$expand_key:execute-silent(\"$SELF\" --toggle {1})+reload(\"$SELF\" --list)")
+callback="$(attention_shell_quote "$SELF")"
+[ "$PICKER_VIEW" = panes ] && callback="$callback --panes"
+if [ -n "$expand_key" ] && [ "$PICKER_VIEW" = sessions ]; then
+  fzf_args+=(--bind "$expand_key:execute-silent($callback --toggle {1})+reload($callback --list)")
 fi
-# The header re-render must carry --from-dir so its retargeted view-key hint
-# survives a sort/kill; the list/cycle subcommands don't depend on it.
-hdr_self="\"$SELF\" --header"
-[ "$FROM_DIR" -eq 1 ] && hdr_self="\"$SELF\" --from-dir --header"
+hdr_self="$callback --header"
 if [ -n "$sort_key" ]; then
-  fzf_args+=(--bind "$sort_key:execute-silent(\"$SELF\" --cycle-sort)+reload(\"$SELF\" --list)+transform-header($hdr_self)")
+  fzf_args+=(--bind "$sort_key:execute-silent($callback --cycle-sort)+reload($callback --list)+transform-header($hdr_self)")
 fi
 if [ -n "$view_key" ]; then
-  if [ "$FROM_DIR" -eq 1 ]; then
-    # reached from the directory picker: the view key toggles back to it (emit a
-    # sentinel the main flow turns into `exec "$NEW"`), not cycling sessions<->panes
-    fzf_args+=(--bind "$view_key:become(printf %s $ATTENTION_TOGGLE)")
-  else
-    fzf_args+=(--bind "$view_key:execute-silent(\"$SELF\" --cycle-view)+reload(\"$SELF\" --list)+transform-header($hdr_self)")
-  fi
+  fzf_args+=(--bind "$view_key:become(printf %s $ATTENTION_TOGGLE)")
 fi
 if [ -n "$kill_key" ]; then
   # execute, not execute-silent: --kill-confirm needs the popup's terminal to
   # prompt on. Killing a row can change the panes-table column widths, so the
   # header label line is re-derived along with the list.
-  fzf_args+=(--bind "$kill_key:execute(\"$SELF\" --kill-confirm {1})+reload(\"$SELF\" --list)+transform-header($hdr_self)")
-fi
-if [ -n "$new_key" ]; then
-  # hand over to the directory picker: emit a sentinel the main flow turns into
-  # `exec "$NEW"`, so it runs at the top level with the terminal (not nested in
-  # this $() with piped std streams, which would break its attach).
-  fzf_args+=(--bind "$new_key:become(printf %s $ATTENTION_TOGGLE)")
+  fzf_args+=(--bind "$kill_key:execute($callback --kill-confirm {1})+reload($callback --list)+transform-header($hdr_self)")
 fi
 if [ -n "$cancel_key" ]; then
   # quit to the terminal — fzf's own abort (esc does the same). With the pickers
@@ -627,10 +581,17 @@ if [ -n "$cancel_key" ]; then
   fzf_args+=(--bind "$cancel_key:abort")
 fi
 
-selection="$(list_rows | fzf "${fzf_args[@]}")" || exit 0
-# the view/new key hands over to the directory picker; abort leaves it empty.
-# exec (not fzf `become`) keeps that picker at the top level with the terminal,
-# so its attach works from a bare shell.
-[ "$selection" = "$ATTENTION_TOGGLE" ] && exec "$NEW"
+selection="$(list_rows | fzf "${fzf_args[@]}")"
+rc=$?
+case "$rc" in
+  0) ;;
+  1 | 130) exit 0 ;; # no match or user abort
+  *) exit "$rc" ;;
+esac
+# Top-level exec preserves the terminal needed by attach.
+if [ "$selection" = "$ATTENTION_TOGGLE" ]; then
+  [ "$PICKER_VIEW" = sessions ] && exec "$SELF" --panes
+  exec "$NEW"
+fi
 [ -n "$selection" ] || exit 0
 jump "${selection%%"$TAB"*}"

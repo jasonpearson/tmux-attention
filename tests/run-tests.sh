@@ -4,12 +4,14 @@
 
 set -u
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$DIR/bin/tmux-attention"
-ICON="$DIR/scripts/icon.sh"
 PICKER="$DIR/scripts/picker.sh"
 NEWSESSION="$DIR/scripts/new-session.sh"
 SOCK="attention-test-$$"
+TEST_TMP="$(cd "$(mktemp -d)" && pwd -P)"
+# Tests must not inherit a user's picker preferences (e.g. from mise).
+while IFS= read -r name; do unset "$name"; done < <(compgen -v TMUX_ATTENTION_)
 
 T() { command tmux -L "$SOCK" "$@"; }
 
@@ -33,10 +35,18 @@ assert_contains() { # desc haystack needle
   esac
 }
 
-cleanup() { T kill-server 2>/dev/null; }
+cleanup() {
+  T kill-server 2>/dev/null
+  exec 9>&-
+  [ -z "${CONTROL_PID:-}" ] || wait "$CONTROL_PID" 2>/dev/null
+  rm -rf "$TEST_TMP"
+}
 trap cleanup EXIT
 
 state_of() { T show-options -pqv -t "$1" @attention_state; }
+# Read the exact native format a user's theme evaluates. No helper process or
+# initialization is involved in rendering, including session/global aggregation.
+native_icon() { tmux display-message -p -t "$2" "#{T:@attention_$1}"; }
 
 # --- server layout: alpha (2 panes), beta, gamma; no clients attached ------
 
@@ -67,36 +77,108 @@ inside() {
   TMUX="$FAKE_TMUX" TMUX_PANE="$pane" "$@"
 }
 
-# --- plugin load: interpolation, hooks, idempotency -------------------------
+# --- automatic behavior without UI initialization --------------------------
 
-T set -g status-left 'L:#{attention_session}#{attention_global}|'
-T set -g window-status-format 'W:#{attention_window}'
-T set -g pane-border-format 'P:#{attention_pane}'
-
-inside "$A1" bash "$DIR/attention.tmux"
-inside "$A1" bash "$DIR/attention.tmux" # second load must not duplicate hooks
-
-assert_contains 'status-left interpolates #{attention_session}' \
-  "$(T show-option -gqv status-left)" "icon.sh session '#{session_id}')"
-assert_contains 'status-left interpolates #{attention_global}' \
-  "$(T show-option -gqv status-left)" "icon.sh global '#{session_id}')"
-assert_contains 'window-status-format interpolates #{attention_window}' \
-  "$(T show-option -gqv window-status-format)" "icon.sh window '#{window_id}')"
-assert_contains 'pane-border-format interpolates #{attention_pane} to a pure format' \
-  "$(T show-option -gqv pane-border-format)" '#{?#{==:#{@attention_state},blocked},🟠 ,'
-assert_eq 'hooks registered exactly once each despite double load' \
+before_status="$(T show-options -gqv status-left)"
+before_keys="$(T list-keys -T prefix)"
+inside "$A1" "$BIN" --help >/dev/null
+inside "$A1" "$BIN" --version >/dev/null
+env -u TMUX -u TMUX_PANE "$BIN" working
+assert_eq 'help/version and outside state no-ops do not install hooks' \
+  "$(T show-hooks -g | grep -c 'seen\.sh')" 0
+assert_eq 'help/version and outside state no-ops do not install formats' \
+  "$(T show-options -gqv @attention_formats_version)" ''
+# Other plugins can occupy any slot; even our preferred index is not reserved.
+T set-hook -g 'after-select-pane[4242]' 'set-option -g @other_hook fired'
+T set -g @attention_icon_failed 'PRESET'
+T set -g @attention_icon_blocked ''
+inside "$A1" "$BIN" working
+assert_eq 'first state command installs all seen hooks' \
   "$(T show-hooks -g | grep -c 'seen\.sh')" 4
-assert_eq 'toggle key bound' \
-  "$(T list-keys -T prefix h 2>/dev/null | grep -c tmux-attention)" 1
-assert_eq 'picker key bound' \
-  "$(T list-keys -T prefix a 2>/dev/null | grep -c picker.sh)" 1
+assert_eq 'first use preserves a preconfigured icon' \
+  "$(T show-options -gqv @attention_icon_failed)" PRESET
+assert_eq 'first use preserves an explicitly empty icon' \
+  "$(T show-options -gqv @attention_icon_blocked)" ''
+T set -g @attention_icon_failed '☠️'
+T set -g @attention_icon_blocked '🟠'
+assert_contains 'automatic hooks preserve other plugins' \
+  "$(T show-hooks -g)" '@other_hook'
+assert_eq 'state command does not rewrite the theme' \
+  "$(T show-options -gqv status-left)" "$before_status"
+assert_eq 'state command does not install key bindings' \
+  "$(T list-keys -T prefix)" "$before_keys"
+inside "$A1" "$BIN" clear
+# Concurrent initialization must converge on the same handler slots.
+T set -gu @attention_hooks_version
+for n in 1 2 3 4; do inside "$A1" "$BIN" idle & done
+wait
+assert_eq 'concurrent state commands do not duplicate hooks' \
+  "$(T show-hooks -g | grep -c 'seen\.sh')" 4
+inside "$A1" "$BIN" clear
 
-# pane scope is a pure format expression, not a #() job: jobs render one
-# redraw late and refresh-client -S never repaints borders, so a job-backed
-# border icon only updated when focus changed.
+# Upgrade from 0.1, including a server where the previous setup already left
+# legacy callbacks alongside the new ones. tmux serializes the plain path
+# without quotes and retains quotes around the path containing spaces.
+legacy_plain="$TEST_TMP/old-checkout/scripts/seen.sh"
+legacy_quoted="$TEST_TMP/old checkout/scripts/seen.sh"
+for migration in legacy-only leftover-legacy; do
+  if [ "$migration" = legacy-only ]; then
+    legacy_slot=100
+    while IFS= read -r line; do
+      case "$line" in
+        *'tmux-attention:seen'*) T set-hook -gu "${line%% *}" ;;
+      esac
+    done < <(T show-hooks -g)
+    T set -gu @attention_hooks_version
+  else
+    legacy_slot=200
+    marker="$(T show-options -gqv @attention_hooks_version)"
+    T set -g @attention_hooks_version "3:${marker#*:}"
+  fi
+  for hook in after-select-pane after-select-window client-session-changed client-attached; do
+    T set-hook -g "$hook[$legacy_slot]" "run-shell \"$legacy_plain\""
+    T set-hook -g "$hook[$((legacy_slot + 1))]" "run-shell \"$legacy_quoted\""
+  done
+  # A different command that mentions the same path must remain untouched.
+  T set-hook -g 'after-select-pane[2]' "run-shell \"printf '%s' '$legacy_plain'\""
+  unrelated_hook="$(T show-hooks -g | grep '^after-select-pane\[2\] ')"
+  inside "$A1" "$BIN" working
+  hooks="$(T show-hooks -g)"
+  assert_eq "$migration: exactly four current seen hooks remain" \
+    "$(printf '%s\n' "$hooks" | grep -c 'tmux-attention:seen')" 4
+  assert_eq "$migration: legacy callbacks are removed" \
+    "$(printf '%s\n' "$hooks" | grep -vF "$unrelated_hook" | grep -c '/scripts/seen.sh')" 4
+  assert_contains "$migration: unrelated command survives unchanged" "$hooks" "$unrelated_hook"
+  assert_contains "$migration: another plugin's occupied slot survives" "$hooks" '@other_hook'
+  inside "$A1" "$BIN" clear
+  assert_eq "$migration: repeated setup leaves hooks unchanged" "$(T show-hooks -g)" "$hooks"
+  T set-hook -gu 'after-select-pane[2]'
+done
+
+# --- native formats: no setup command or theme rewriting -------------------
+
+T set -g status-left 'L:#{T:@attention_session}#{T:@attention_global}|'
+T set -g window-status-format 'W:#{T:@attention_window}'
+T set -g pane-border-format 'P:#{T:@attention_pane}'
+
+for scope in pane window session global; do
+  assert_eq "first state use registers the native $scope format" \
+    "$(T show-options -gqv "@attention_$scope" | grep -c '#{')" 1
+  assert_eq "$scope renders without a shell job" \
+    "$(T show-options -gqv "@attention_$scope" | grep -Fc '#(')" 0
+done
+inside "$A1" bash "$DIR/attention.tmux"
+inside "$A1" bash "$DIR/attention.tmux"
+assert_eq 'optional plugin preserves the native status format verbatim' \
+  "$(T show-option -gqv status-left)" 'L:#{T:@attention_session}#{T:@attention_global}|'
+assert_eq 'optional plugin does not install bindings' \
+  "$(T list-keys -T prefix)" "$before_keys"
+assert_eq 'hooks registered exactly once each despite double plugin load' \
+  "$(T show-hooks -g | grep -c 'seen\.sh')" 4
+
 BORDER_FMT="$(T show-option -gqv pane-border-format)"
 T set -p -t "$A1" @attention_state done
-assert_eq 'pane border renders done via pure format' \
+assert_eq 'pane border renders done via native format' \
   "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:🔥 '
 T set -p -t "$A1" @attention_state idle
 assert_eq 'pane border renders nothing for idle' \
@@ -104,17 +186,6 @@ assert_eq 'pane border renders nothing for idle' \
 T set -pu -t "$A1" @attention_state
 assert_eq 'pane border renders nothing for untracked' \
   "$(T display-message -p -t "$A1" "$BORDER_FMT")" 'P:'
-
-# with @attention_stale_timeout on, pane scope keeps the #() job (a format
-# expression cannot compute the working->unknown downgrade)
-T set -g @attention_stale_timeout 30
-T set -g pane-border-format 'P:#{attention_pane}'
-inside "$A1" bash "$DIR/attention.tmux"
-assert_contains 'stale timeout keeps the #() job for pane scope' \
-  "$(T show-option -gqv pane-border-format)" "icon.sh pane '#{pane_id}')"
-T set -gu @attention_stale_timeout
-T set -g pane-border-format 'P:#{attention_pane}'
-inside "$A1" bash "$DIR/attention.tmux"
 
 # --- recording with nothing focused (no attached clients) -------------------
 
@@ -135,86 +206,80 @@ assert_eq 'working overwrites blocked' "$(state_of "$A2")" working
 # --- aggregation and icons ---------------------------------------------------
 
 # alpha: A1=done, A2=working
-assert_eq 'pane icon for done' "$(inside "$A1" bash "$ICON" pane "$A1")" '🔥 '
+assert_eq 'pane icon for done' "$(inside "$A1" native_icon pane "$A1")" '🔥 '
 assert_eq 'window aggregation: done outranks working' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '🔥 '
+  "$(inside "$A1" native_icon window "$A_WIN")" '🔥 '
 inside "$A2" "$BIN" failed
 assert_eq 'window aggregation: failed outranks done' \
-  "$(inside "$A1" bash "$ICON" window "$A_WIN")" '☠️ '
+  "$(inside "$A1" native_icon window "$A_WIN")" '☠️ '
 assert_eq 'session aggregation matches window' \
-  "$(inside "$A1" bash "$ICON" session "$A_SID")" '☠️ '
+  "$(inside "$A1" native_icon session "$A_SID")" '☠️ '
 
 assert_eq 'global icon shows the highest-priority state elsewhere' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '☠️ '
+  "$(inside "$B1" native_icon global "$B_SID")" '☠️ '
 assert_eq 'global icon excludes own session' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" ''
-
-# real status-job path: tmux expands #{session_id} to a literal $N and runs
-# the #() job via sh -c, which would swallow an unquoted $N as a shell
-# positional parameter. Regression for the bug where global showed
-# own-session attention in session $0 and nothing at all in other sessions.
-inner="$(T show-option -gqv status-left | grep -o '#([^)]*icon\.sh global[^)]*)' | sed 's/^#(//; s/)$//')"
-job="$(T display-message -p -t "$B1" "$inner")"
-assert_eq 'status job carries the session id quoted against sh -c' \
-  "$job" "$DIR/scripts/icon.sh global '$B_SID'"
-assert_eq 'global icon renders via the real sh -c job path' \
-  "$(inside "$B1" sh -c "$job")" '☠️ '
-job_a="$(T display-message -p -t "$A1" "$inner")"
-assert_eq 'own-session ($0) attention stays hidden via the sh -c job path' \
-  "$(inside "$A1" sh -c "$job_a")" ''
+  "$(inside "$A1" native_icon global "$A_SID")" ''
+assert_eq 'native status format composes scopes and ordinary theme text' \
+  "$(T display-message -p -t "$A1" "$(T show-options -gqv status-left)")" 'L:☠️ |'
 inside "$G1" "$BIN" working
 assert_eq 'working elsewhere aggregates as working' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '⚙️ '
+  "$(inside "$A1" native_icon global "$A_SID")" '⚙️ '
 inside "$G1" "$BIN" unknown
 assert_eq 'unknown elsewhere aggregates as unknown' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '❓ '
+  "$(inside "$A1" native_icon global "$A_SID")" '❓ '
 assert_eq 'session icon for unknown' \
-  "$(inside "$G1" bash "$ICON" session "$G_SID")" '❓ '
+  "$(inside "$G1" native_icon session "$G_SID")" '❓ '
 
-# the aggregate spans every other session: failed in alpha outranks
-# blocked in gamma when viewed from beta
 T set -p -t "$G1" @attention_state blocked
 assert_eq 'global picks the highest priority across other sessions' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" '☠️ '
+  "$(inside "$B1" native_icon global "$B_SID")" '☠️ '
 T set -p -t "$G1" @attention_state unknown
 
-# --- icon configurability ----------------------------------------------------
+# --- icon configurability: changes are live, not baked into expressions ------
 
 T set -g @attention_icon_failed 'F!'
-assert_eq 'icon option override' "$(inside "$A1" bash "$ICON" window "$A_WIN")" 'F! '
+assert_eq 'icon option override' "$(inside "$A1" native_icon window "$A_WIN")" 'F! '
 assert_eq 'icon override flows through the global aggregate' \
-  "$(inside "$B1" bash "$ICON" global "$B_SID")" 'F! '
+  "$(inside "$B1" native_icon global "$B_SID")" 'F! '
+T set -g @attention_icon_failed ''
+assert_eq 'hiding the highest-priority icon does not expose a lower priority' \
+  "$(inside "$A1" native_icon session "$A_SID")" ''
 T set -gu @attention_icon_failed
 T set -g @attention_icon_unknown ''
 assert_eq 'explicitly empty icon renders nothing' \
-  "$(inside "$G1" bash "$ICON" session "$G_SID")" ''
+  "$(inside "$G1" native_icon session "$G_SID")" ''
 T set -gu @attention_icon_unknown
 
-# --- staleness ---------------------------------------------------------------
+# --- staleness: evaluated natively, never stored back into pane state --------
 
 inside "$B1" "$BIN" working
 T set -p -t "$B1" @attention_since "$(($(date +%s) - 100))"
 T set -g @attention_stale_timeout 30
 assert_eq 'stale working renders as unknown' \
-  "$(inside "$B1" bash "$ICON" pane "$B1")" '❓ '
-# viewed from alpha so beta's stale pane is the highest state elsewhere
-# (gamma idles to keep its unknown from providing the ❓ instead)
+  "$(inside "$B1" native_icon pane "$B1")" '❓ '
 inside "$G1" "$BIN" idle
 assert_eq 'stale working aggregates as unknown for global' \
-  "$(inside "$A1" bash "$ICON" global "$A_SID")" '❓ '
+  "$(inside "$A1" native_icon global "$A_SID")" '❓ '
+assert_eq 'native stale rendering does not rewrite working' "$(state_of "$B1")" working
 T set -gu @attention_stale_timeout
 assert_eq 'timeout off: old working stays working' \
-  "$(inside "$B1" bash "$ICON" pane "$B1")" '⚙️ '
+  "$(inside "$B1" native_icon pane "$B1")" '⚙️ '
 
 # --- clear -------------------------------------------------------------------
 
 inside "$G1" "$BIN" clear
 assert_eq 'clear removes state' "$(state_of "$G1")" ''
-assert_eq 'cleared pane renders nothing' "$(inside "$G1" bash "$ICON" pane "$G1")" ''
+assert_eq 'cleared pane renders nothing' "$(inside "$G1" native_icon pane "$G1")" ''
+
+# Native rendering/defaults/overrides also get exhaustive isolated coverage.
+source "$DIR/tests/native-format-tests.sh"
 
 # --- focus behavior (control-mode client attached to alpha) ------------------
 
-sleep 30 | T -C attach-session -t alpha >/dev/null 2>&1 &
+mkfifo "$TEST_TMP/control"
+T -C attach-session -t alpha <"$TEST_TMP/control" >/dev/null 2>&1 &
+CONTROL_PID=$!
+exec 9>"$TEST_TMP/control"
 sleep 1
 assert_eq 'control client attached' "$(T list-clients | grep -c .)" 1
 CLIENT="$(T list-clients -F '#{client_name}')"
@@ -335,10 +400,10 @@ header="$(inside "$B1" bash "$PICKER" --header)"
 assert_contains 'header shows the view mode' "$header" 'view: sessions'
 assert_contains 'header shows the sort mode' "$header" 'sort: attention'
 assert_contains 'header shows the expand key' "$header" 'tab: expand'
-assert_contains 'header shows the view key' "$header" 'shift-tab: view'
+assert_contains 'header shows the next view' "$header" 'shift-tab: panes'
 assert_contains 'header shows the sort key' "$header" 'ctrl-s: sort'
 assert_contains 'header shows the kill key' "$header" 'K: kill'
-assert_contains 'header shows the new key' "$header" 'ctrl-n: new'
+assert_eq 'header has no duplicate new key' "$(printf '%s' "$header" | grep -c 'ctrl-n:')" 0
 assert_contains 'header shows the cancel key' "$header" 'ctrl-c: quit'
 # line 1 is the keys, dimmed (fzf renders the ANSI as-is); line 2 is the
 # live view/sort state, in fzf's own header colour
@@ -351,16 +416,47 @@ assert_eq 'sessions view: header ends in a blank spacer line' \
 assert_eq 'sessions view: header has no column-label line' \
   "$(printf '%s' "$header" | grep -c .)" 3
 
-# arriving from the directory picker (--from-dir) retargets the view key: it
-# round-trips back to directories instead of cycling sessions<->panes
-fromdir="$(inside "$B1" bash "$PICKER" --from-dir --header)"
-assert_contains 'from-dir header retargets the view key to directories' \
-  "$fromdir" 'shift-tab: directories'
-assert_eq 'from-dir header drops the sessions<->panes view hint' \
-  "$(printf '%s' "$fromdir" | grep -c 'shift-tab: view')" 0
-assert_eq 'from-dir is transparent to the list subcommand' \
-  "$(inside "$B1" bash "$PICKER" --from-dir --list)" \
-  "$(inside "$B1" bash "$PICKER" --list)"
+# Startup view is local, ignoring any stale pre-consolidation preference.
+T set -g @attention_picker_view panes
+assert_contains 'persisted view is ignored' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'view: sessions'
+T set -gu @attention_picker_view
+assert_contains 'panes cycles to directories' \
+  "$(inside "$B1" bash "$PICKER" --panes --header)" 'shift-tab: directories'
+export TMUX_ATTENTION_PICKER_VIEW_KEY=''
+assert_eq 'empty environment view key disables hint' \
+  "$(inside "$B1" bash "$PICKER" --header | grep -c 'shift-tab:')" 0
+unset TMUX_ATTENTION_PICKER_VIEW_KEY
+T set -gu @attention_picker_sort
+export TMUX_ATTENTION_PICKER_SORT=name
+assert_contains 'environment supplies initial sort' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'sort: name'
+export TMUX_ATTENTION_PICKER_SORT=''
+assert_contains 'empty initial sort falls back to attention' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'sort: attention'
+unset TMUX_ATTENTION_PICKER_SORT
+T set -g @attention_picker_sort attention
+
+# Preferences come only from the process environment, including explicit empty.
+T set -g @attention_picker_expand_key ignored
+assert_contains 'legacy tmux key option is ignored' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'tab: expand'
+T set -gu @attention_picker_expand_key
+for pref in EXPAND SORT KILL CANCEL; do
+  export "TMUX_ATTENTION_PICKER_${pref}_KEY=ctrl-x"
+  assert_contains "$pref key honors environment" \
+    "$(inside "$B1" bash "$PICKER" --header)" 'ctrl-x:'
+  export "TMUX_ATTENTION_PICKER_${pref}_KEY="
+  case "$pref" in
+    EXPAND) hint=': expand' ;;
+    SORT) hint=': sort' ;;
+    KILL) hint=': kill' ;;
+    CANCEL) hint=': quit' ;;
+  esac
+  assert_eq "$pref key honors explicit empty" \
+    "$(inside "$B1" bash "$PICKER" --header | head -1 | grep -c "$hint")" 0
+  unset "TMUX_ATTENTION_PICKER_${pref}_KEY"
+done
 
 # expanding alpha (1 window, 2 panes) flattens to leaf rows: the panes
 # appear directly under the session, no row for the multi-pane window
@@ -392,21 +488,20 @@ assert_eq 'title equal to the pane path suppressed' \
 # gamma=failed, A1=unknown, A2=working, beta=idle. Single-pane windows keep
 # their window id and w:name label; panes of multi-pane windows their pane
 # id and w.p label.
-T set -g @attention_picker_view panes
 expected="$G_WIN
 $A1
 $A2
 $B_WIN"
 assert_eq 'panes view: one row per pane, attention order' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1)" "$expected"
 # column padding varies with field widths, so squeeze space runs before
 # matching; the fields themselves must still appear in order
 assert_contains 'panes view: pane rows carry session name and w.p label' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${A1}$(printf '\t')" | tr -s ' ')" 'alpha 0.0'
+  "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${A1}$(printf '\t')" | tr -s ' ')" 'alpha 0.0'
 assert_contains 'panes view: single-pane window rows keep the window name' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | tr -s ' ')" 'beta 0:'
+  "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${B_WIN}$(printf '\t')" | tr -s ' ')" 'beta 0:'
 assert_contains 'panes view: informative pane title still appended' \
-  "$(inside "$B1" bash "$PICKER" --list)" '— writing tests'
+  "$(inside "$B1" bash "$PICKER" --panes --list)" '— writing tests'
 
 # rows are "id TAB icon TAB text" — the icon rides its own tab-terminated
 # field for fzf's --tabstop gutter, while the text fields are padded into
@@ -416,17 +511,17 @@ assert_contains 'panes view: informative pane title still appended' \
 # offsets via awk index safe to compare).
 if command -v column >/dev/null 2>&1; then
   assert_eq 'panes view: fields padded into aligned columns' \
-    "$(inside "$B1" bash "$PICKER" --list | grep -Ec 'beta {2,}0:')" 1
+    "$(inside "$B1" bash "$PICKER" --panes --list | grep -Ec 'beta {2,}0:')" 1
   assert_eq 'panes view: icons ride their own tab-stopped field' \
-    "$(inside "$B1" bash "$PICKER" --list | grep -F "${G_WIN}$(printf '\t')" | cut -f2)" '☠️'
+    "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${G_WIN}$(printf '\t')" | cut -f2)" '☠️'
   assert_eq 'panes view: iconless rows carry an empty icon field' \
-    "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f2)" ''
+    "$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${B_WIN}$(printf '\t')" | cut -f2)" ''
   assert_eq 'panes view: blank spacer between the hints and the labels' \
-    "$(inside "$B1" bash "$PICKER" --header | sed -n 3p)" ''
-  labels="$(inside "$B1" bash "$PICKER" --header | sed -n 4p)"
+    "$(inside "$B1" bash "$PICKER" --panes --header | sed -n 3p)" ''
+  labels="$(inside "$B1" bash "$PICKER" --panes --header | sed -n 4p)"
   assert_contains 'panes view: header carries the column labels' \
     "$(printf '%s' "$labels" | tr -s ' ')" 'session pane command path title'
-  beta_text="$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')" | cut -f3)"
+  beta_text="$(inside "$B1" bash "$PICKER" --panes --list | grep -F "${B_WIN}$(printf '\t')" | cut -f3)"
   assert_eq 'panes view: header labels line up with the columns' \
     "$(awk -v s="$labels" 'BEGIN { sub(/^ */, "", s); print index(s, "pane") }')" \
     "$(awk -v s="$beta_text" 'BEGIN { print index(s, "0:") }')"
@@ -435,7 +530,7 @@ fi
 # beta is not expandable in the tree, so its pane's title surfaces only here
 T select-pane -t "$B1" -T 'triage me'
 assert_contains 'panes view: single-pane session surfaces its pane title' \
-  "$(inside "$B1" bash "$PICKER" --list)" '— triage me'
+  "$(inside "$B1" bash "$PICKER" --panes --list)" '— triage me'
 T select-pane -t "$B1" -T ''
 
 # no self-demotion: the pane you are in ranks by its own state like any other
@@ -446,16 +541,16 @@ T select-pane -t "$B1" -T ''
 T set -p -t "$G1" @attention_state done
 T set -p -t "$B1" @attention_state failed
 assert_eq 'panes view: current pane ranks by its own state' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1 | sed -n 1p)" "$B_WIN"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1 | sed -n 1p)" "$B_WIN"
 T set -p -t "$B1" @attention_state idle
 T set -p -t "$G1" @attention_state failed
 
 # nothing expands in the flat view: alpha stays expanded, nothing collapses
-inside "$B1" bash "$PICKER" --toggle "$A2"
+inside "$B1" bash "$PICKER" --panes --toggle "$A2"
 assert_eq 'panes view: expand toggle is a no-op' \
   "$(T show-options -gqv @attention_picker_expanded)" "$A_SID"
 
-header="$(inside "$B1" bash "$PICKER" --header)"
+header="$(inside "$B1" bash "$PICKER" --panes --header)"
 assert_contains 'panes view: header shows the view mode' "$header" 'view: panes'
 assert_eq 'panes view: header omits the expand key' \
   "$(printf '%s' "$header" | grep -c 'tab: expand')" 0
@@ -466,7 +561,7 @@ $A2
 $B_WIN
 $G_WIN"
 assert_eq 'panes view: name order groups panes by session' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1)" "$expected"
 T set -g @attention_picker_sort attention
 
 # attention ties break by recency here too: all idle, the panes of the
@@ -479,19 +574,16 @@ $A2
 $G_WIN
 $B_WIN"
 assert_eq 'panes view: attention ties break by recency' \
-  "$(inside "$B1" bash "$PICKER" --list | cut -f1)" "$expected"
+  "$(inside "$B1" bash "$PICKER" --panes --list | cut -f1)" "$expected"
 T set -p -t "$A1" @attention_state unknown
 T set -p -t "$A2" @attention_state working
 T set -p -t "$G1" @attention_state failed
 
-# the view flips between the two modes and persists in the global option
-inside "$B1" bash "$PICKER" --cycle-view
-assert_eq 'cycle-view: panes -> sessions' \
-  "$(T show-options -gqv @attention_picker_view)" sessions
-inside "$B1" bash "$PICKER" --cycle-view
-assert_eq 'cycle-view: sessions -> panes' \
-  "$(T show-options -gqv @attention_picker_view)" panes
-T set -gu @attention_picker_view
+# A panes invocation does not alter the next navigator's startup view.
+assert_contains 'new invocation starts in sessions after panes' \
+  "$(inside "$B1" bash "$PICKER" --header)" 'view: sessions'
+assert_eq 'view never persists a server option' \
+  "$(T show-options -gqv @attention_picker_view)" ''
 
 # beta holds a single pane: session, window, and pane rows would all jump
 # to the same place, so it is not expandable and toggling it is a no-op
@@ -520,7 +612,7 @@ case "$PWD" in
   *) SHORT_PWD="$PWD" ;;
 esac
 assert_contains 'window leaf shows its pane command and path' \
-  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')")" "zsh $SHORT_PWD"
+  "$(inside "$B1" bash "$PICKER" --list | grep -F "${B_WIN}$(printf '\t')")" "$(T display-message -p -t "$B1" '#{pane_current_command}') $SHORT_PWD"
 
 # toggling from a child row collapses the owning session
 inside "$B1" bash "$PICKER" --toggle "$A1"
@@ -604,14 +696,54 @@ assert_eq 'new-session on a missing directory errors' "$?" 1
 assert_eq 'new-session on a missing directory creates nothing' \
   "$(T list-sessions -F '#{session_name}' | grep -c .)" "$sessions_before"
 
+# A directory that exists but cannot be entered (no search permission) must
+# error and create nothing, not close the popup with no message. Root ignores
+# the permission bits, so skip the check there.
+if [ "$(id -u)" -ne 0 ]; then
+  mkdir -p "$TMPROOT/locked"
+  chmod 000 "$TMPROOT/locked"
+  sessions_before="$(T list-sessions -F '#{session_name}' | grep -c .)"
+  inside "$B1" bash "$NEWSESSION" "$TMPROOT/locked" 2>/dev/null
+  locked_rc=$?
+  chmod 755 "$TMPROOT/locked"
+  assert_eq 'new-session on an unreadable directory errors' "$locked_rc" 1
+  assert_eq 'new-session on an unreadable directory creates nothing' \
+    "$(T list-sessions -F '#{session_name}' | grep -c .)" "$sessions_before"
+fi
+
 # the CLI delegates: this is the entry point a shell alias would use
-inside "$B1" "$BIN" new "$TMPROOT/cli"
-assert_eq 'tmux-attention new rejects a missing directory' \
+inside "$B1" "$BIN" "$TMPROOT/cli"
+assert_eq 'tmux-attention DIR rejects a missing directory' \
   "$(T has-session -t '=cli' 2>/dev/null && echo yes)" ''
 mkdir -p "$TMPROOT/cli"
-inside "$B1" "$BIN" new "$TMPROOT/cli"
-assert_eq 'tmux-attention new creates the session' \
+inside "$B1" "$BIN" "$TMPROOT/cli"
+assert_eq 'tmux-attention DIR creates the session' \
   "$(T has-session -t '=cli' 2>/dev/null && echo yes)" yes
+
+mkdir -p "$TMPROOT/space name/child" "$TMPROOT/other/proj"
+(cd "$TMPROOT/space name" && inside "$B1" "$BIN" .)
+assert_eq 'dot resolves to the actual directory leaf including spaces' \
+  "$(T list-panes -t '=space name' -F '#{pane_current_path}' | sed -n 1p)" "$TMPROOT/space name"
+(cd "$TMPROOT/space name/child" && inside "$B1" "$BIN" ../)
+assert_eq 'parent and trailing slash reuse the canonical session' \
+  "$(T list-sessions -F '#{session_name}' | grep -Fxc 'space name')" 1
+inside "$B1" "$BIN" -- "$TMPROOT/other/proj/"
+assert_eq 'same leaf in another directory reuses existing session' \
+  "$(T list-panes -t '=proj' -F '#{pane_current_path}' | sed -n 1p)" "$TMPROOT/proj"
+inside "$B1" "$BIN" /
+assert_eq 'root directory uses root session name' \
+  "$(T list-panes -t '=root' -F '#{pane_current_path}' | sed -n 1p)" /
+
+# `cd -- -` still means OLDPWD; the public CLI must treat it as ./- instead.
+mkdir -p "$TMPROOT/-" "$TMPROOT/oldpwd"
+(cd "$TMPROOT" && inside "$B1" env OLDPWD="$TMPROOT/oldpwd" "$BIN" -- -)
+assert_eq 'literal dash directory invocation succeeds' "$?" 0
+assert_eq 'literal dash directory creates a dash-named session' \
+  "$(T has-session -t '=-' 2>/dev/null && echo yes)" yes
+assert_eq 'literal dash directory roots the session in ./-' \
+  "$(T list-panes -t '=-' -F '#{pane_current_path}' 2>/dev/null | sed -n 1p)" "$TMPROOT/-"
+assert_eq 'literal dash directory switches to the dash-named session' \
+  "$(T list-clients -F '#{session_name}')" '-'
 
 rm -rf "$TMPROOT"
 
@@ -626,34 +758,36 @@ assert_eq 'walk never follows symlinks' \
   "$(printf '%s' "$wargs" | grep -c follow)" 0
 assert_contains 'walk starts at $HOME by default' "$wargs" "--walker-root=$HOME"
 
-T set -g @attention_picker_dir_hidden off
+export TMUX_ATTENTION_DIR_HIDDEN=off
 assert_contains 'dir_hidden off drops hidden directories' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker=dir'
 assert_eq 'dir_hidden off leaves no hidden flag' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c hidden)" 0
-T set -g @attention_picker_dir_hidden on
+export TMUX_ATTENTION_DIR_HIDDEN=on
 assert_contains 'dir_hidden on restores them' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker=dir,hidden'
-T set -gu @attention_picker_dir_hidden
+unset TMUX_ATTENTION_DIR_HIDDEN
 
-T set -g @attention_picker_dir_skip 'foo,bar'
+export TMUX_ATTENTION_DIR_SKIP='foo,bar'
 assert_contains 'dir_skip replaces the skip list' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker-skip=foo,bar'
-# an empty skip list is "descend into everything", not an empty argument
-T set -g @attention_picker_dir_skip ''
-assert_eq 'an empty dir_skip drops the flag' \
-  "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c walker-skip)" 0
-T set -gu @attention_picker_dir_skip
+# An explicit empty flag overrides fzf's own .git,node_modules skip default.
+export TMUX_ATTENTION_DIR_SKIP=''
+assert_eq 'an empty dir_skip overrides the fzf default' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args | grep -c '^--walker-skip=$')" 1
+unset TMUX_ATTENTION_DIR_SKIP
 
 # tmux expands ~ in a double-quoted option value but not a single-quoted one
-T set -g @attention_picker_dir_root '~/code'
+export TMUX_ATTENTION_DIR_ROOT='~/code'
 assert_contains 'dir_root expands a literal ~' \
   "$(inside "$B1" bash "$NEWSESSION" --walker-args)" "--walker-root=$HOME/code"
-T set -gu @attention_picker_dir_root
+export TMUX_ATTENTION_DIR_ROOT=''
+assert_contains 'explicit empty root is preserved' \
+  "$(inside "$B1" bash "$NEWSESSION" --walker-args)" '--walker-root='
+unset TMUX_ATTENTION_DIR_ROOT
 
-# --- directory picker: the view key toggles over to the session picker -------
-# The bind itself is an interactive become, but the header advertises it and is
-# built from the same shared @attention_picker_view_key the session picker uses.
+# --- directory picker: the view key cycles over to the session picker --------
+# The header shares the session picker's environment-only view key.
 
 dhdr="$(inside "$B1" bash "$NEWSESSION" --header)"
 assert_contains 'dir picker header offers create/switch' \
@@ -662,20 +796,33 @@ assert_contains 'dir picker header toggles to sessions on the view key' \
   "$dhdr" 'shift-tab: sessions'
 assert_contains 'dir picker header shows the cancel key' \
   "$dhdr" 'ctrl-c: quit'
-T set -g @attention_picker_view_key 'ctrl-t'
+export TMUX_ATTENTION_PICKER_VIEW_KEY=ctrl-t
 assert_contains 'dir picker header honors a custom view key' \
   "$(inside "$B1" bash "$NEWSESSION" --header)" 'ctrl-t: sessions'
-T set -g @attention_picker_view_key ''
+export TMUX_ATTENTION_PICKER_VIEW_KEY=''
 assert_eq 'dir picker header drops the toggle when the view key is disabled' \
   "$(inside "$B1" bash "$NEWSESSION" --header | grep -c ': sessions')" 0
-T set -gu @attention_picker_view_key
-T set -g @attention_picker_cancel_key 'ctrl-g'
+unset TMUX_ATTENTION_PICKER_VIEW_KEY
+export TMUX_ATTENTION_PICKER_CANCEL_KEY=ctrl-g
 assert_contains 'dir picker header honors a custom cancel key' \
   "$(inside "$B1" bash "$NEWSESSION" --header)" 'ctrl-g: quit'
-T set -g @attention_picker_cancel_key ''
+export TMUX_ATTENTION_PICKER_CANCEL_KEY=''
 assert_eq 'dir picker header drops the cancel hint when disabled' \
   "$(inside "$B1" bash "$NEWSESSION" --header | grep -c ': quit')" 0
-T set -gu @attention_picker_cancel_key
+unset TMUX_ATTENTION_PICKER_CANCEL_KEY
+
+# Diagnostics on a nonexistent socket remain headless and never start a server.
+COLD_SOCKET="${SOCKET_PATH}-cold"
+assert_eq 'cold sessions diagnostic is empty' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --sessions --list)" ''
+assert_eq 'cold panes diagnostic is empty' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --panes --list)" ''
+assert_contains 'cold sessions still advertises panes' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --sessions --header)" 'shift-tab: panes'
+assert_contains 'cold panes still advertises directories' \
+  "$(TMUX="$COLD_SOCKET,0,0" bash "$PICKER" --panes --header)" 'shift-tab: directories'
+assert_eq 'cold diagnostics leave server absent' \
+  "$(command tmux -S "$COLD_SOCKET" list-sessions 2>/dev/null && echo running)" ''
 
 # --- outside tmux ------------------------------------------------------------
 
@@ -697,6 +844,28 @@ assert_eq 'unknown command errors' "$?" 1
 assert_eq 'no command without a tty exits 1' "$?" 1
 assert_contains 'no command without a tty prints usage' \
   "$("$BIN" 2>&1 >/dev/null)" 'usage: tmux-attention'
+
+# Additional acceptance cases share the isolated server and assertions above.
+source "$DIR/tests/cli-tests.sh"
+if bash "$DIR/tests/terminal-tests.sh"; then
+  ok 'real-terminal navigation and attach/switch'
+else
+  not_ok 'real-terminal navigation and attach/switch' failed passed
+fi
+if bash "$DIR/tests/package-tests.sh"; then
+  ok 'portable release package'
+else
+  not_ok 'portable release package' failed passed
+fi
+if command -v mise >/dev/null 2>&1; then
+  if bash "$DIR/tests/mise-tests.sh"; then
+    ok 'isolated mise execution and shim dispatch'
+  else
+    not_ok 'isolated mise execution and shim dispatch' failed passed
+  fi
+else
+  printf 'skip - optional mise smoke test (mise not installed)\n'
+fi
 
 # --- summary -----------------------------------------------------------------
 

@@ -5,7 +5,7 @@
 # client-attached, and handles all of them the same way: scan every pane
 # once and idle whichever focused ones are in a notifying state.
 
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CURRENT_DIR="$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 source "$CURRENT_DIR/helpers.sh"
 
