@@ -22,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
-  [ -z "${PANE:-}" ] || D capture-pane -p -t "$PANE" >&2 2>/dev/null || true
+  [ -z "${PANE:-}" ] || D capture-pane -p -S - -t "$PANE" >&2 2>/dev/null || true
   exit 1
 }
 wait_screen() {
@@ -30,6 +30,9 @@ wait_screen() {
   for ((n=0; n<100; n++)); do
     text="$(D capture-pane -p -t "$PANE" 2>/dev/null || true)"
     case "$text" in *"$1"*) return 0 ;; esac
+    if [ -f "$WORK/result" ]; then
+      fail "CLI exited $(<"$WORK/result") before screen showed: $1"
+    fi
     sleep 0.05
   done
   fail "screen did not show: $1"
@@ -98,6 +101,9 @@ PATH="$WORK/bin:$PATH" "$BIN" done
 if T list-sessions >/dev/null 2>&1; then fail 'help/version/state started a server'; fi
 
 D -f /dev/null new-session -d -s driver -x 120 -y 40 'sleep 300'
+# Preserve startup errors after the child exits instead of losing its pane and
+# reporting only a missing prompt (for example, a broken tool-manager shim).
+D set-window-option -g remain-on-exit on
 # Each CLI launch gets a real terminal and reports its result after detach/abort.
 launch() {
   rm -f "$WORK/result"
@@ -113,6 +119,14 @@ launch() {
   } > "$WORK/launch.sh"
   PANE="$(D new-window -d -P -F '#{pane_id}' "bash $(printf %q "$WORK/launch.sh")")"
 }
+
+# Even a command that exits immediately must leave its diagnostic inspectable.
+launch "$WORK/missing-directory"
+wait_result 1
+case "$(D capture-pane -p -S - -t "$PANE")" in
+  *'tmux-attention: no such directory:'*) ;;
+  *) fail 'lost the diagnostic from an exited CLI' ;;
+esac
 
 launch
 wait_screen 'directories >'

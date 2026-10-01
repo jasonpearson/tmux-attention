@@ -34,4 +34,6 @@ jobs:
             ln -s /bin/bash "$RUNNER_TEMP/bash3/bash"
             export PATH="$RUNNER_TEMP/bash3:$PATH"
           fi
-          /bin/bash tests/run-tests.sh
+          # Terminal tests cd outside this checkout's .tool-versions scope.
+          # Activate real tool paths so fzf remains available there.
+          mise exec -- /bin/bash tests/run-tests.sh

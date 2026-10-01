@@ -11,7 +11,7 @@ native_format_tests() {
   local i j winner expected before_layout before_options templates custom
   local p1 p2 p3 observer third session="native-formats-$$"
   local elsewhere="native-observer-$$" extra="native-extra-$$"
-  local now since timeout stamp before after rendered sample attempt matched
+  local now since timeout stamp before after rendered sample attempt matched target
   local control_pid client n navigation_dir old_bin old_error old_rc
 
   # Keep absent and explicitly empty options distinct, including internal
@@ -116,6 +116,14 @@ native_format_tests() {
     assert_eq "native $scope templates contain no shell jobs" \
       "$(printf '%s\n' "$value" | grep -Fc '#(')" 0
   done
+  # Existing servers must replace templates from before the overflow fix.
+  before="$(T show-options -gqv @attention_pane)"
+  T set-option -g @attention_formats_version 3
+  T set-option -g @attention_pane old-template
+  inside "$p1" "$BIN" working
+  assert_eq 'native state use upgrades older registered templates' \
+    "$(T show-options -gqv @attention_pane)" "$before"
+
   # Every state-management entry point must register, including clear and run.
   for state in blocked failed done idle unknown clear toggle run; do
     native_test_reset_formats
@@ -204,7 +212,16 @@ native_format_tests() {
   for state in failed blocked done unknown working idle; do
     native_test_state "$p1" "$state"
     T set-option -g "@attention_icon_$state" "$custom"
-    native_test_expect "literal special characters in the $state icon" "$custom " "$custom "
+    # Compare inside tmux: 3.4 adds a backslash before $ in command output
+    # (including display-message -p), but not in the actual rendered format.
+    # Reading both sides through stdout would hide a genuine extra backslash.
+    for scope in pane window session global; do
+      target="$p1"
+      [ "$scope" != global ] || target="$observer"
+      value="#{==:#{T:@attention_$scope},#{@attention_icon_$state} }"
+      assert_eq "native literal special characters in the $state icon ($scope)" \
+        "$(T display-message -p -t "$target" "$value")" 1
+    done
     T set-option -g "@attention_icon_$state" 0
     native_test_expect "custom zero $state icon is nonempty" '0 ' '0 '
     T set-option -g "@attention_icon_$state" ''
@@ -311,6 +328,13 @@ native_format_tests() {
       T set-option -p -t "$p1" @attention_since "$stamp"
       native_test_expect "enabled timeout '$timeout', valid timestamp '$stamp'" "$expected" "$expected"
     done
+  done
+  # A huge timestamp is valid future work, not an overflowing signed integer.
+  # Include a timeout+timestamp sum beyond the integer range as well.
+  T set-option -g @attention_stale_timeout 30
+  for stamp in 9223372036854775790 9223372036854775808 99999999999999999999999999999999999999999999999999; do
+    T set-option -p -t "$p1" @attention_since "$stamp"
+    native_test_expect "huge future timestamp '$stamp' stays fresh" '⚙️ ' '⚙️ '
   done
   # Expiry is classified per pane before scopes choose their winning state.
   T set-option -g @attention_stale_timeout 30

@@ -7,7 +7,11 @@ attention_state_format() {
   # Consumers use T: so strftime expands %s BEFORE evaluating the loops. Keep
   # classification outside the loops and inline everything to minimize depth
   # when these formats are embedded in themes. tmux >= 3.3 allows 100 levels.
-  expired='#{e|>:%s,#{e|+:#{@attention_since},#{@attention_stale_timeout}}}'
+  # Keep both operations in floating-point mode: tmux's default integer mode
+  # casts through long long, overflowing large digit-only values differently on
+  # x86 and ARM. Zero decimal places keeps the result a 0/1 token; ordinary
+  # epoch seconds still compare exactly, including the strict expiry boundary.
+  expired='#{e|>|f|0:%s,#{e|+|f|0:#{@attention_since},#{@attention_stale_timeout}}}'
   valid='#{m/r:^[0-9]+$,#{@attention_since}}'
   # Drop non-word state data as a whole before adding token delimiters. Unknown
   # words then cannot masquerade as a recognized suffix (e.g. bad_failed).
@@ -40,7 +44,7 @@ attention_state_format() {
 }
 
 ensure_icon_formats() {
-  local options state name scope marker=3 format version major minor
+  local options state name scope marker=4 format version major minor
   # One snapshot distinguishes missing from explicitly empty options. Refill
   # unset defaults on later CLI use, but never overwrite a user's icon (even
   # empty). -o also protects against concurrent first use / config changes.

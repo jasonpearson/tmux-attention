@@ -79,8 +79,12 @@ inside "$A1" "$relocated/bin/tmux-attention" working
 assert_eq 'relocation keeps exactly four seen hooks' \
   "$(T show-hooks -g | grep -c 'tmux-attention:seen')" 4
 assert_contains 'relocation preserves other hooks' "$(T show-hooks -g)" '@other_hook'
-assert_contains 'relocation records the new handler path' \
-  "$(T show-options -gqv @attention_hooks_version)" "$relocated/scripts/seen.sh"
+# Compare raw values on the server: tmux 3.4 escapes $ in command output even
+# with show-options -v. That output encoding is not part of the stored marker.
+T set -g @test_relocated_handler "$relocated/scripts/seen.sh"
+assert_eq 'relocation records the new handler path' \
+  "$(T display-message -p '#{m:*#{@test_relocated_handler}:*,#{@attention_hooks_version}}')" 1
+T set -gu @test_relocated_handler
 assert_eq 'relocation leaves native templates unchanged' \
   "$(cli_native_templates)" "$templates_before"
 # Fire a real focus hook against the control client.
