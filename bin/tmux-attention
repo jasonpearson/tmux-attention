@@ -37,8 +37,9 @@ usage: tmux-attention [directory]
 
 Navigation switches the client inside tmux and attaches outside it. The default
 picker lists sessions by recent activity, then directories in source order.
-Search filters without reordering. The panes picker keeps attention order and
-supports confirmed pane killing (K); neither picker switches views or sorting.
+Search filters without reordering. The panes picker keeps attention order;
+shift-tab cycles all/agent/non-agent panes (remembered for this server), and K
+confirms pane killing. Neither picker switches views or sorting.
 Directory arguments and directory selections from a pane shell close that pane
 after switching to a different session (and its session if it was the last pane).
 Popup directory selections, session/pane selections, failed navigation and

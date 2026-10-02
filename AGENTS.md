@@ -28,8 +28,8 @@ existing sessions and directories.
   `#{T:@attention_session}` etc. No shell render jobs.
 - `scripts/seen.sh` — focus-hook handler: focused panes in a notifying
   state (blocked/failed/done) downgrade to idle.
-- `scripts/picker.sh` — flat pane picker: attention ordering, column alignment,
-  jump, and confirmed pane kill.
+- `scripts/picker.sh` — flat pane picker: command filtering, attention ordering,
+  column alignment, jump, and confirmed pane kill.
 - `scripts/new-session.sh` — combined session/directory picker and direct
   directory → session named after its canonical leaf. Private implementation,
   not public API. Both pickers run in the invoking terminal.
@@ -38,8 +38,8 @@ existing sessions and directories.
 - `tests/run-tests.sh` — acceptance tests against isolated tmux servers
   (`-L` sockets), including native-format-tests.sh (priorities, live icons and
   staleness), cli-tests.sh, directory-tests.sh (source-pane cleanup),
-  pane-picker-tests.sh, launcher-tests.sh, terminal-tests.sh (real PTYs,
-  including picker-cleanup-tests.sh for shell/popup cleanup),
+  pane-picker-tests.sh (including pane-filter-tests.sh), launcher-tests.sh,
+  terminal-tests.sh (real PTYs, including shell/popup cleanup and pane filtering),
   package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
@@ -141,7 +141,8 @@ existing sessions and directories.
   icon/key) from *unset* (default). Don't replace them with `${var:-default}`.
 - CLI/picker preferences use `TMUX_ATTENTION_*` environment variables, so cold
   starts work. Keep directory-source settings; `TMUX_ATTENTION_PICKER_KILL_KEY`
-  applies only to panes and `TMUX_ATTENTION_PICKER_CANCEL_KEY` to both pickers.
+  and `TMUX_ATTENTION_PICKER_FILTER_KEY` apply only to panes, and
+  `TMUX_ATTENTION_PICKER_CANCEL_KEY` to both pickers.
   Tmux options configure presentation or store runtime state; do not add a
   parallel tmux-option configuration API for CLI preferences.
 - Outside tmux, valid CLI *state* commands exit 0 silently (`run` still executes
@@ -174,6 +175,13 @@ existing sessions and directories.
   Both pickers use fuzzy search only to filter, preserving input order. Keep
   ordering fixed and the commands separate: no tree expansion, view/sort
   switching, remembered sort/view state, or tree-icon configuration.
+- **Pane filtering**: shift-tab cycles all → agents → non-agents → all while
+  keeping the query and attention order. An agent has `pane_current_command`
+  exactly `pi`, `claude`, or `codex`, independently of attention state/title.
+  Persist `all`/`agents`/`non-agents` in global `@attention_picker_filter`;
+  unset/invalid means all. This is shared server-lifetime runtime state, not
+  configuration. Rendering is read-only; cycling on a cold server is a no-op.
+  Apply the filter before column alignment, including after kill/reload.
 - **Terminal ownership**: interactive fzf may read a candidate pipe, but attach
   runs afterward with the caller's terminal stdin/stdout. Preserve that handoff
   outside tmux and let abort return directly to the caller.

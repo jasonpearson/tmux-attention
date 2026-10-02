@@ -51,8 +51,8 @@ wait_matches() {
   local n text
   for ((n=0; n<100; n++)); do
     text="$(D capture-pane -p -t "$PANE" 2>/dev/null || true)"
-    # A tmux popup adds its border before fzf's count line.
-    if printf '%s\n' "$text" | grep -Eq "^[[:space:]│]*$1/[0-9]+"; then return 0; fi
+    # A popup border or fzf's reload spinner may precede the count.
+    if printf '%s\n' "$text" | grep -Eq "^[^[:alnum:]]*$1/[0-9]+"; then return 0; fi
     sleep 0.05
   done
   fail "picker did not settle on $1 matches"
@@ -202,7 +202,8 @@ launch() {
   {
     printf '#!/usr/bin/env bash\nunset TMUX TMUX_PANE\n'
     printf 'export PATH=%q\ncd %q\n' "$WORK/bin:$PATH" "$WORK/projects/sample"
-    for name in TMUX_ATTENTION_DIR_COMMAND TMUX_ATTENTION_DIR_ROOT TMUX_ATTENTION_DIR_SKIP FZF_DEFAULT_COMMAND; do
+    for name in TMUX_ATTENTION_DIR_COMMAND TMUX_ATTENTION_DIR_ROOT TMUX_ATTENTION_DIR_SKIP \
+      TMUX_ATTENTION_PICKER_FILTER_KEY FZF_DEFAULT_COMMAND; do
       printf 'unset %s\n' "$name"
       if [ "${!name+set}" = set ]; then printf 'export %s=%q\n' "$name" "${!name}"; fi
     done
@@ -212,7 +213,12 @@ launch() {
   PANE="$(D new-window -d -P -F '#{pane_id}' "bash $(printf %q "$WORK/launch.sh")")"
 }
 
-# Focused feedback loop: bash tests/terminal-tests.sh --cleanup-only
+# Focused feedback loops: --filter-only or --cleanup-only. Each sourced suite
+# leaves the target server cold for the next suite's first-use assertions.
+if [ "${1:-}" != --cleanup-only ]; then
+  source "$ROOT/tests/pane-filter-terminal-tests.sh"
+fi
+[ "${1:-}" != --filter-only ] || exit 0
 source "$ROOT/tests/picker-cleanup-tests.sh"
 [ "${1:-}" != --cleanup-only ] || exit 0
 

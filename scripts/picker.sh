@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# All panes on the selected tmux server, ordered by attention then recency.
+# Panes on the selected tmux server, filtered by command and attention-ranked.
 # Run in the caller's terminal; enter switches inside tmux or attaches outside.
 #
 #   picker.sh                    interactive pane picker
 #   picker.sh --list             print rows (fzf reload)
 #   picker.sh --header           print the header (fzf transform-header)
+#   picker.sh --cycle-filter     remember all -> agents -> non-agents -> all
 #   picker.sh --kill <pane-id>    kill only the specified pane
 #   picker.sh --kill-confirm <pane-id>
 #                                prompt on the terminal, then kill on y/Y
@@ -57,23 +58,49 @@ icon_gutter() {
   printf '%s' "$w"
 }
 
+# This is server-lifetime UI state, not configuration or attention state.
+# Read-only callers never initialize it; unset/invalid values mean all panes.
+picker_filter() {
+  local filter
+  filter="$(tmux show-options -gqv @attention_picker_filter 2>/dev/null)" || filter=''
+  case "$filter" in
+    all | agents | non-agents) printf '%s' "$filter" ;;
+    *) printf all ;;
+  esac
+}
+
+cycle_filter() {
+  local next
+  # Browsing an empty picker must not bootstrap a tmux server.
+  tmux list-sessions >/dev/null 2>&1 || return 0
+  case "$(picker_filter)" in
+    all) next=agents ;;
+    agents) next=non-agents ;;
+    non-agents) next=all ;;
+  esac
+  tmux set-option -g @attention_picker_filter "$next"
+}
+
 picker_keys() {
   kill_key="$(attention_env TMUX_ATTENTION_PICKER_KILL_KEY K)"
   cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
+  filter_key="$(attention_env TMUX_ATTENTION_PICKER_FILTER_KEY shift-tab)"
 }
 
 header_text() {
-  local h keys labels NL=$'\n' DIM=$'\033[90m' OFF=$'\033[0m'
+  local h keys labels filter NL=$'\n' DIM=$'\033[90m' OFF=$'\033[0m'
+  filter="$(picker_filter)"
   keys='enter: jump'
+  [ -n "$filter_key" ] && keys="$keys  |  $filter_key: filter"
   [ -n "$kill_key" ] && keys="$keys  |  $kill_key: kill pane"
   [ -n "$cancel_key" ] && keys="$keys  |  $cancel_key: quit"
   # ANSI in --header is rendered directly by fzf (no --ansi needed). Only
   # the reference keys are dimmed, not the explanation or column labels.
-  h="${DIM}${keys}${OFF}${NL}panes: attention first, then recent activity"
+  h="${DIM}${keys}${OFF}${NL}panes: $filter | attention first, then recent activity"
   if ! tmux list-sessions >/dev/null 2>&1; then
     h="${DIM}${keys}${OFF}${NL}No panes: no sessions on this tmux server."
   fi
-  labels="$(list_rows header)"
+  labels="$(list_rows header "$filter")"
   if [ -n "$labels" ]; then
     h="$h$NL$NL$labels"
   else
@@ -88,11 +115,16 @@ header_text() {
 # still includes the window name; split windows retain the familiar w.p label.
 build_pane_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since
-  local eff act label
+  local eff act label kind
   while IFS="$TAB" read -r s_id s_name s_act w_id w_idx w_act w_name w_panes \
     p_id p_idx p_cmd p_path state since; do
     w_name="${w_name#x}"
     p_cmd="${p_cmd#x}"
+    case "$p_cmd" in
+      pi | claude | codex) kind=agents ;;
+      *) kind=non-agents ;;
+    esac
+    [ "$FILTER" = all ] || [ "$FILTER" = "$kind" ] || continue
     p_path="${p_path#x}"
     state="${state#x}"
     since="${since#x}"
@@ -150,9 +182,11 @@ align_pane_rows() {
 # windows may appear in several sessions: keep each pane's highest-ranked
 # context and carry it through selection, rather than resolving it afresh.
 list_rows() {
-  local TIMEOUT NOW rows
+  local TIMEOUT NOW FILTER rows
   local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE GUTTER
   tmux list-sessions >/dev/null 2>&1 || return 0
+  # Header labels and their rows use the same mode snapshot.
+  FILTER="${2:-$(picker_filter)}"
   TIMEOUT="$(stale_timeout_seconds)"
   NOW="$(date +%s)"
   I_BLOCKED="$(state_icon blocked)"
@@ -195,10 +229,14 @@ kill_target() {
 }
 
 case "${1:-}" in
-  --list | --header)
+  --list | --header | --cycle-filter)
     [ "$#" -eq 1 ] || exit 1
     attention_require tmux || exit 1
-    if [ "$1" = --list ]; then list_rows; else picker_keys; header_text; fi
+    case "$1" in
+      --list) list_rows ;;
+      --header) picker_keys; header_text ;;
+      --cycle-filter) cycle_filter ;;
+    esac
     exit "$?"
     ;;
   --kill | --kill-confirm)
@@ -260,6 +298,11 @@ fzf_args=(--reverse --no-sort --no-tac --no-multi --prompt 'panes > '
   --delimiter "$TAB" --with-nth '2..-3' --header "$(header_text)")
 [ "$GUTTER" -gt 0 ] && fzf_args+=(--tabstop "$GUTTER")
 callback="$(attention_shell_quote "$SELF")"
+if [ -n "$filter_key" ]; then
+  # Persist synchronously before reloading. No row placeholder: this must work
+  # even with zero matches. Reload keeps the query and fixed attention order.
+  fzf_args+=(--bind "$filter_key:execute-silent($callback --cycle-filter)+reload($callback --list)+transform-header($callback --header)")
+fi
 if [ -n "$kill_key" ]; then
   # Killing may change table widths; recompute both the rows and their labels.
   fzf_args+=(--bind "$kill_key:execute($callback --kill-confirm {1})+reload($callback --list)+transform-header($callback --header)")

@@ -163,9 +163,19 @@ Within a priority, the latest activity comes first, with stable tie-breaks.
 Fuzzy search filters the table without reordering it.
 
 - **enter** — jump to the selected pane.
+- **shift-tab** — cycle **all panes → agent panes → non-agent panes → all panes**.
 - **K** — confirm killing the selected pane; only `y`/`Y` kills. The target is
   always that pane, even in a single-pane window. Its empty window or session
   may close as a consequence.
+
+The header shows the active pane filter. Agent panes are those whose current
+command is exactly `pi`, `claude`, or `codex`, regardless of attention state;
+every other command is non-agent. This is a lightweight heuristic: an agent
+shown as `node`, `bash`, or `ssh` is not detected through its child processes.
+Cycling preserves your search query and attention ordering, even when a filter
+has no matches. The choice is shared across clients on the same tmux server
+and remembered across picker openings (including after cancel), starting at
+**all panes** on a fresh server. It does not affect the session/directory picker.
 
 In both pickers, **ctrl-c / esc** quits back to the terminal and movement stays
 fzf's own, including **ctrl-n/ctrl-p** and **ctrl-j/ctrl-k**. There is no tree,
@@ -220,10 +230,12 @@ export TMUX_ATTENTION_DIR_COMMAND=''
 
 export TMUX_ATTENTION_PICKER_KILL_KEY='K'
 export TMUX_ATTENTION_PICKER_CANCEL_KEY='ctrl-c'
+export TMUX_ATTENTION_PICKER_FILTER_KEY='shift-tab'
 ```
 
-`PICKER_KILL_KEY` applies only to `panes`; `PICKER_CANCEL_KEY` applies to both
-pickers. An empty key disables that configured binding; esc remains fzf's abort.
+`PICKER_KILL_KEY` and `PICKER_FILTER_KEY` apply only to `panes`;
+`PICKER_CANCEL_KEY` applies to both pickers. An empty key disables that
+configured binding; esc remains fzf's abort.
 `DIR_HIDDEN=off` excludes dotted directories. `DIR_SKIP` lists single path
 components; empty means skip nothing. The walker never follows symlinks.
 Narrowing `DIR_ROOT` to a projects directory is the simplest performance
@@ -387,9 +399,10 @@ checkout path or shell alias is needed.
 - Bare invocation always combines sessions and directories; use
   `tmux-attention panes` for the separate pane picker.
 - Replace `@attention_picker_dir_*` with `TMUX_ATTENTION_DIR_*` environment variables.
-- Configure only the kill key (panes) and cancel key (both pickers) through the
-  [CLI preferences](#cli-preferences). Remove former expand/view/sort settings
-  and tree-icon overrides; ordering is fixed and there is no view cycling.
+- Configure the kill/filter keys (panes) and cancel key (both pickers) through
+  the [CLI preferences](#cli-preferences). Remove former expand/view/sort
+  settings and tree-icon overrides; ordering is fixed and shift-tab now cycles
+  the pane filter, not views.
 - Update [tmux bindings](#opt-in-bindings): prefix+a calls `tmux-attention panes`,
   prefix+A calls bare `tmux-attention`. Shell aliases can stay bare.
 - Keep only one installation; update hook paths and reload tmux after switching.

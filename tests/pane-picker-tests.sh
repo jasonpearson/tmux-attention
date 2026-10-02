@@ -37,8 +37,8 @@ assert_eq 'pane picker covers all six priorities plus untracked' \
   "$(printf '%s\n' "$pane_rows" | cut -f1 | awk -v ids="$pane_rank_ids " 'index(ids," "$0" ")')" "$pane_expected"
 for pane_fixture in $pane_rank_ids; do T kill-pane -t "$pane_fixture"; done
 
-# Neither server-persisted options nor removed environment preferences can
-# override ordering or reintroduce modes.
+# Neither obsolete server options nor removed environment preferences can
+# override ordering or reintroduce the former view/expansion modes.
 T set -g @attention_picker_sort name
 T set -g @attention_picker_view sessions
 T set -g @attention_picker_expanded "$A_SID"
@@ -58,22 +58,25 @@ for obsolete in --panes --sessions --toggle --cycle-sort; do
   assert_eq "obsolete private picker action fails: $obsolete" "$?" 1
 done
 
+source "$DIR/tests/pane-filter-tests.sh"
+
 pane_header="$(inside "$B1" bash "$PICKER" --header)"
 assert_contains 'pane header describes its fixed ranking' "$pane_header" 'attention first, then recent activity'
 assert_contains 'pane header advertises confirmed pane kill' "$pane_header" 'K: kill pane'
 assert_contains 'pane header advertises cancel' "$pane_header" 'ctrl-c: quit'
+assert_contains 'pane header advertises filter cycling' "$pane_header" 'shift-tab: filter'
 assert_contains 'pane header dims only hotkey hints' \
   "$(printf '%s\n' "$pane_header" | head -1)" "$(printf '\033[90m')"
 assert_eq 'pane header omits view/expand/sort controls' \
-  "$(printf '%s\n' "$pane_header" | grep -Ec 'shift-tab|ctrl-s|expand|view:|sort:')" 0
+  "$(printf '%s\n' "$pane_header" | grep -Ec 'ctrl-s|expand|view:|sort:')" 0
 for pref in VIEW SORT EXPAND; do
   assert_eq "pane header ignores removed $pref key preference" \
     "$(inside "$B1" env "TMUX_ATTENTION_PICKER_${pref}_KEY=ctrl-x" bash "$PICKER" --header)" "$pane_header"
 done
-for pref in KILL CANCEL; do
+for pref in KILL CANCEL FILTER; do
   assert_contains "pane header honors custom $pref key" \
     "$(inside "$B1" env "TMUX_ATTENTION_PICKER_${pref}_KEY=ctrl-x" bash "$PICKER" --header)" 'ctrl-x:'
-  case "$pref" in KILL) pane_hint=': kill pane' ;; CANCEL) pane_hint=': quit' ;; esac
+  case "$pref" in KILL) pane_hint=': kill pane' ;; CANCEL) pane_hint=': quit' ;; FILTER) pane_hint=': filter' ;; esac
   assert_eq "pane header honors empty $pref key" \
     "$(inside "$B1" env "TMUX_ATTENTION_PICKER_${pref}_KEY=" bash "$PICKER" --header | grep -c "$pane_hint")" 0
 done
@@ -191,10 +194,14 @@ assert_eq 'cold pane diagnostic is empty' \
   "$(TMUX="$pane_cold,0,0" bash "$PICKER" --list)" ''
 assert_contains 'cold pane header explains there are no sessions' \
   "$(TMUX="$pane_cold,0,0" bash "$PICKER" --header)" 'No panes:'
+pane_cycle_output="$(TMUX="$pane_cold,0,0" bash "$PICKER" --cycle-filter)"
+pane_cycle_rc="$?"
+assert_eq 'cold filter cycling is a silent no-op' "$pane_cycle_output" ''
+assert_eq 'cold filter cycling succeeds without a server' "$pane_cycle_rc" 0
 assert_eq 'cold pane diagnostics leave server absent' \
   "$(command tmux -S "$pane_cold" list-sessions 2>/dev/null && echo running)" ''
 
 unset pane_rows pane_header pane_hint pane_title pane_labels pane_text pane_state \
   pane_rank_ids pane_expected pane_fixture pane_victim pane_sibling pane_cold \
   pane_linked_row pane_context pane_context_name pane_confirm_output \
-  pane_plain_bin pane_plain_rows pane_tool
+  pane_plain_bin pane_plain_rows pane_tool pane_cycle_output pane_cycle_rc
