@@ -38,11 +38,28 @@ Or add to `~/.config/mise/config.toml` and run `mise install`:
 The GitHub backend installs our universal release archive and discovers its
 `bin/` directory. There is no custom mise plugin or postinstall setup. These
 commands require a **published release asset**, not merely a Git tag. For an
-unreleased checkout, use the source installation below.
+unreleased checkout, use the helper below or the source installation.
 
 For noninteractive callers without mise's activated PATH, use the stable shim
 `~/.local/share/mise/shims/tmux-attention` (with the default mise data directory),
 or `mise exec -- tmux-attention …`. Do not hardcode a versioned install path.
+
+#### Local checkout with mise
+
+```sh
+~/repos/tmux-attention/scripts/link-local.sh
+```
+
+The helper links its checkout as `github:jasonpearson/tmux-attention@local`
+and runs `mise use -g` to select it in your global mise config. It works from
+any directory; rerunning it replaces the previous `local` link. Source edits
+are immediately available without reinstalling.
+
+To return to the release:
+
+```sh
+mise use -g github:jasonpearson/tmux-attention@0.2.0
+```
 
 ### Source or release archive
 

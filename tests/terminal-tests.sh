@@ -472,14 +472,17 @@ pane_exists "$KEEP_PANE" || fail 'outside direct attach closed its destination p
 if T has-session -t '=direct-fresh' 2>/dev/null; then fail 'fresh destination already exists'; fi
 for destination in direct-fresh direct-existing; do
   T switch-client -c "$CLIENT" -t '=direct-source'
-  TARGET_PANE="$(T split-window -t "$KEEP_PANE" -c "$WORK/projects/direct-source" -P -F '#{pane_id}')"
-  invoke_inside "$WORK/projects/$destination"
+  # Reproduce directory-based window naming: the source window and destination
+  # session share a name, while `.` is entered from the source's real shell.
+  TARGET_PANE="$(T split-window -t "$KEEP_PANE" -c "$WORK/projects/$destination" -P -F '#{pane_id}')"
+  T rename-window -t "$TARGET_PANE" "$destination"
+  invoke_inside .
   wait_client_session "$destination"
   wait_pane_closed "$TARGET_PANE"
   [ "$(T list-clients -F '#{client_name}')" = "$CLIENT" ] || fail 'direct navigation replaced its client'
-  [ "$(T list-panes -s -t '=direct-source' -F '#{pane_id}')" = "$KEEP_PANE" ] ||
+  [ "$(T list-panes -s -t '=direct-source:' -F '#{pane_id}')" = "$KEEP_PANE" ] ||
     fail 'direct navigation removed more than its invoking pane'
-  DESTINATION_PANE="$(T list-panes -s -t "=$destination" -F '#{pane_id}')"
+  DESTINATION_PANE="$(T list-panes -s -t "=$destination:" -F '#{pane_id}')"
   pane_exists "$DESTINATION_PANE" || fail 'direct navigation closed its destination pane'
   [ "$(T display-message -p -t "$DESTINATION_PANE" '#{pane_current_path}')" = "$WORK/projects/$destination" ] ||
     fail 'direct navigation entered the wrong directory'

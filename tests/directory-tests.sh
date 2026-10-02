@@ -10,6 +10,9 @@ nav_root="$TEST_TMP/directory-navigation"
 mkdir -p "$nav_root/directory-destination" "$nav_root/create-failure"
 nav_source="$(T new-session -d -s directory-source -P -F '#{pane_id}')"
 nav_sibling="$(T split-window -t "$nav_source" -P -F '#{pane_id}')"
+# Directory-based themes can give the source window the destination's name.
+# list-panes must not mistake that window for the destination session.
+T rename-window -t "$nav_source" directory-destination
 T switch-client -c "$CLIENT" -t '=directory-source'
 inside "$nav_source" "$BIN" "$nav_root/directory-destination"
 assert_eq 'directory switch from an inactive source pane succeeds' "$?" 0
@@ -19,7 +22,7 @@ assert_eq 'directory switch preserves the source sibling pane' \
   "$(directory_pane_exists "$nav_sibling" && echo yes)" yes
 assert_eq 'directory switch moves the client to the new destination' \
   "$(T list-clients -F '#{session_name}')" directory-destination
-nav_destination="$(T list-panes -t '=directory-destination' -F '#{pane_id}')"
+nav_destination="$(T list-panes -t '=directory-destination:' -F '#{pane_id}')"
 
 # Reusing an existing destination must also close the old session's last pane,
 # but only after switching the client so it stays attached to the destination.
@@ -31,7 +34,7 @@ assert_eq 'directory switch closes the source session with its last pane' \
 assert_eq 'directory switch keeps the original client attached' \
   "$(T list-clients -F '#{client_name}|#{session_name}')" "$CLIENT|directory-destination"
 assert_eq 'directory reuse preserves the existing destination pane' \
-  "$(T list-panes -t '=directory-destination' -F '#{pane_id}')" "$nav_destination"
+  "$(T list-panes -t '=directory-destination:' -F '#{pane_id}')" "$nav_destination"
 
 inside "$nav_destination" "$BIN" "$nav_root/directory-destination"
 assert_eq 'same-session directory navigation succeeds' "$?" 0

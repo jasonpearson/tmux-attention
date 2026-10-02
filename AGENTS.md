@@ -90,10 +90,11 @@ surfaces icons in the status bar plus an fzf session picker.
   tests; adding a line shifts them.
 - **Session targets are `=name`**: tmux matches session names by prefix
   otherwise, so `has-session -t bet` finds `beta` and a new session for
-  `~/bet` would silently switch you into the wrong one. `=name` is a
-  *session* target: `display-message -t` (a pane target) will not take
-  one — reach for `list-panes -t '=name'` instead. tmux also rewrites
-  `.` and `:` in a session name, which is why we do it first: otherwise
+  `~/bet` would silently switch you into the wrong one. For window/pane
+  targets, qualify the session with a colon: `list-panes -t '=name:'`.
+  Even `list-panes -s` resolves a bare `=name` as a same-named window
+  in the source session first. tmux also rewrites `.` and `:` in a
+  session name, which is why we do it first: otherwise
   the has-session lookup misses the session new-session would create.
 - **Tab-delimited plumbing**: `IFS=$TAB read` merges runs of tabs, so
   any field that can be empty carries an `x` sentinel prefix (see

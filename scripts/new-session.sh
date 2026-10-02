@@ -192,7 +192,9 @@ go_to_dir() {
   # Never kill a pane in the destination itself (including a window linked
   # into both sessions). In particular, `tmux-attention .` can be a no-op.
   if [ -n "$source_pane" ]; then
-    destination_panes="$(tmux list-panes -s -t "=$name" -F '#{pane_id}')" || return 1
+    # list-panes resolves a window target even with -s. The trailing colon
+    # forces session lookup instead of a same-named window in the source.
+    destination_panes="$(tmux list-panes -s -t "=$name:" -F '#{pane_id}')" || return 1
     if printf '%s\n' "$destination_panes" | grep -Fxq -- "$source_pane"; then
       source_pane=''
     fi
