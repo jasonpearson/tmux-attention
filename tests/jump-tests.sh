@@ -12,6 +12,8 @@ jump_acceptance_tests() {
   local jump_states=(untracked idle working unknown done blocked failed)
   local jump_panes=() jump_alpha jump_beta jump_a0 jump_a1 jump_a2 jump_a10
   local jump_b0 jump_bw jump_b1 jump_aw jump_victim jump_log
+  local jump_sub jump_sub_session jump_sub_window jump_empty_source jump_empty_client
+  local jump_empty_control_pid=''
   jump_bin="$jump_root/bin"
   jump_log="$jump_root/fault"
   mkdir -p "$jump_bin"
@@ -21,7 +23,9 @@ jump_acceptance_tests() {
     J kill-server 2>/dev/null || true
     command tmux -S "$jump_root/cold.sock" kill-server 2>/dev/null || true
     exec 8>&-
+    exec 7>&-
     [ -z "$jump_control_pid" ] || wait "$jump_control_pid" 2>/dev/null
+    [ -z "$jump_empty_control_pid" ] || wait "$jump_empty_control_pid" 2>/dev/null
   }
   jump_saved_trap="$(trap -p EXIT)"
   trap 'jump_cleanup; cleanup' EXIT
@@ -145,6 +149,57 @@ WRAPPER
     assert_eq "jump $jump_mode a running empty server does not install formats or icons" \
       "$(command tmux -S "$jump_root/cold.sock" show-options -g | grep -c '^@attention_')" 0
   done
+
+  # A running server containing ONLY subagent panes is just as empty for jump.
+  # Attach a client and leave a failed pane in another window: checking focus,
+  # active selections and states catches setup/seen side effects, not just rc.
+  JC() { command tmux -S "$jump_root/cold.sock" "$@"; }
+  jump_empty_source="$(JC new-session -d -P -F '#{pane_id}' -s prefix-subagents-suffix 'exec sleep 600')"
+  jump_sub="$(JC new-window -d -t '=prefix-subagents-suffix:' -P -F '#{pane_id}' 'exec sleep 600')"
+  JC set -g @jump_test_session_activity 100
+  JC set -g @jump_test_window_activity 100
+  JC set -g @jump_test_command node
+  JC set -p -t "$jump_sub" @attention_state failed
+  JC set -p -t "$jump_sub" @attention_since 123
+  mkfifo "$jump_root/subagents-control"
+  JC -C attach-session -t '=prefix-subagents-suffix' <"$jump_root/subagents-control" >/dev/null 2>&1 &
+  jump_empty_control_pid=$!
+  exec 7>"$jump_root/subagents-control"
+  for ((jump_n=0; jump_n<100; jump_n++)); do
+    jump_empty_client="$(JC list-clients -F '#{client_name}')"
+    [ -z "$jump_empty_client" ] || break
+    sleep 0.05
+  done
+  assert_eq 'subagent-only jump fixture has an attached client' \
+    "$(JC list-clients -F '#{client_name}' | grep -c .)" 1
+  for jump_mode in outside inside; do
+    jump_hooks="$(JC show-hooks -g)"
+    jump_options="$(JC show-options -g)"
+    jump_before="$(JC list-clients -F '#{session_id}:#{window_id}.#{pane_id}')"
+    jump_layout="$(JC list-panes -a -F '#{session_id}:#{window_id}.#{pane_id} #{window_active} #{pane_active} #{@attention_state} #{@attention_since}')"
+    if [ "$jump_mode" = inside ]; then
+      jump_out="$(env TMUX="$jump_root/cold.sock,0,0" TMUX_PANE="$jump_empty_source" \
+        JUMP_TEST_SOCKET="$jump_root/cold.sock" PATH="$jump_path" \
+        "$BIN" jump </dev/null 2>&1)"
+    else
+      jump_out="$(env -u TMUX -u TMUX_PANE JUMP_TEST_SOCKET="$jump_root/cold.sock" \
+        PATH="$jump_path" "$BIN" jump </dev/null 2>&1)"
+    fi
+    jump_rc=$?
+    assert_eq "jump $jump_mode with only subagent panes succeeds without a terminal" "$jump_rc" 0
+    assert_eq "jump $jump_mode with only subagent panes is silent" "$jump_out" ''
+    assert_eq "jump $jump_mode with only subagent panes installs no hooks" "$(JC show-hooks -g)" "$jump_hooks"
+    assert_eq "jump $jump_mode with only subagent panes installs no formats/icons/filter" "$(JC show-options -g)" "$jump_options"
+    assert_eq "jump $jump_mode with only subagent panes preserves attached-client focus" \
+      "$(JC list-clients -F '#{session_id}:#{window_id}.#{pane_id}')" "$jump_before"
+    assert_eq "jump $jump_mode with only subagent panes leaves active panes/windows and state untouched" \
+      "$(JC list-panes -a -F '#{session_id}:#{window_id}.#{pane_id} #{window_active} #{pane_active} #{@attention_state} #{@attention_since}')" "$jump_layout"
+  done
+  JC kill-server
+  exec 7>&-
+  wait "$jump_empty_control_pid" 2>/dev/null
+  jump_empty_control_pid=''
+  unset -f JC
 
   jump_source="$(J -f /dev/null new-session -d -P -F '#{pane_id}' \
     -s source -x 120 -y 40 'exec sleep 600')"
@@ -329,6 +384,55 @@ WRAPPER
   jump_wait_seen "$jump_b0"
   assert_eq 'jump to a linked pane applies the seen hook' "$(jump_state_of "$jump_b0")" idle
   assert_eq 'jump to a linked pane preserves the invoking single-pane session' \
+    "$(J list-panes -t "$jump_source_session:" -F '#{pane_id}')" "$jump_source"
+
+  # Subagent-only work is never eligible, even failed work versus ordinary
+  # untracked work. Current panes remain eligible and the source stays intact.
+  jump_home
+  for jump_pane in $(J list-panes -a -F '#{pane_id}' | sort -u); do
+    J set -pu -t "$jump_pane" @attention_state
+    J set -pu -t "$jump_pane" @attention_since
+  done
+  J set -t "$jump_source_session" @jump_test_session_activity 50000
+  jump_sub="$(J new-session -d -P -F '#{pane_id}' -s x-subagents-jump 'exec sleep 600')"
+  jump_sub_session="$(J display-message -p -t "$jump_sub" '#{session_id}')"
+  jump_sub_window="$(J display-message -p -t "$jump_sub" '#{window_id}')"
+  J set -t "$jump_sub_session" @jump_test_session_activity 999999
+  J set -p -t "$jump_sub" @attention_state failed
+  jump_expect 'jump prefers a current ordinary untracked pane over failed subagent work' \
+    "$jump_source" "$jump_source_session" "$jump_source_window"
+  assert_eq 'excluded failed subagent work is not acknowledged by jump' "$(jump_state_of "$jump_sub")" failed
+  J set -u -t "$jump_source_session" @jump_test_session_activity
+
+  # The same pane belongs to two ordinary sessions and a much newer subagent
+  # session. Use the best ORDINARY context, even when a command filter hides it.
+  J link-window -s "$jump_bw" -t "$jump_sub_session:9" -d
+  for jump_filter in agents non-agents; do
+    jump_home
+    jump_command=node
+    [ "$jump_filter" != non-agents ] || jump_command=pi
+    J set -p -t "$jump_b0" @jump_test_command "$jump_command"
+    J set -p -t "$jump_b0" @attention_state failed
+    J set -g @attention_picker_filter "$jump_filter"
+    assert_eq "$jump_filter filter really hides the mixed-membership jump candidate" \
+      "$(jump_inside bash "$PICKER" --list | cut -f1 | grep -Fxc "$jump_b0")" 0
+    jump_expect "jump ignores $jump_filter and chooses the highest-ranked ordinary linked context" \
+      "$jump_b0" "$jump_alpha" "$jump_bw"
+    jump_wait_seen "$jump_b0"
+    assert_eq "mixed-membership jump preserves saved $jump_filter filter" \
+      "$(J show-options -gqv @attention_picker_filter)" "$jump_filter"
+    assert_eq "mixed-membership jump with $jump_filter still acknowledges arrival" "$(jump_state_of "$jump_b0")" idle
+    assert_eq "mixed-membership jump with $jump_filter leaves subagent-only work failed" "$(jump_state_of "$jump_sub")" failed
+  done
+  J set -gu @attention_picker_filter
+  J rename-session -t "$jump_sub_session" 'Subagents-jump'
+  jump_home
+  jump_expect 'jump observes live renames and case-sensitive subagents classification' \
+    "$jump_sub" "$jump_sub_session" "$jump_sub_window"
+  jump_wait_seen "$jump_sub"
+  jump_home
+  J kill-session -t "$jump_sub_session"
+  assert_eq 'group-aware jump never closes its invoking source pane' \
     "$(J list-panes -t "$jump_source_session:" -F '#{pane_id}')" "$jump_source"
 
   # Lookup failures must not select some other valid pane or consume the source.

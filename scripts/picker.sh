@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Panes on the selected tmux server, filtered by command and attention-ranked.
+# Panes on the selected server: ordinary first, then subagents; ranked within each.
 # Run in the caller's terminal; enter switches inside tmux or attaches outside.
 #
 #   picker.sh                    interactive pane picker
-#   picker.sh --jump             jump to the top-ranked pane, ignoring filters
+#   picker.sh --jump             top ordinary pane, ignoring command filters
 #   picker.sh --list             print rows (fzf reload)
 #   picker.sh --header           print the header (fzf transform-header)
 #   picker.sh --cycle-filter     remember all -> agents -> non-agents -> all
@@ -97,7 +97,7 @@ header_text() {
   [ -n "$cancel_key" ] && keys="$keys  |  $cancel_key: quit"
   # ANSI in --header is rendered directly by fzf (no --ansi needed). Only
   # the reference keys are dimmed, not the explanation or column labels.
-  h="${DIM}${keys}${OFF}${NL}panes: $filter | attention first, then recent activity"
+  h="${DIM}${keys}${OFF}${NL}panes: $filter | attention first, then recent activity | ordinary before subagents"
   if ! tmux list-sessions >/dev/null 2>&1; then
     h="${DIM}${keys}${OFF}${NL}No panes: no sessions on this tmux server."
   fi
@@ -111,14 +111,19 @@ header_text() {
   printf '%s' "$h"
 }
 
-# Sort keys: priority, activity, session name, numeric window/pane indices.
+# Sort keys: ordinary/subagent group, priority, activity, session name, numeric
+# window/pane indices. Grouping before deduplication makes ordinary membership
+# win for linked panes, even when their subagent-session context is more recent.
 # All targets are pane IDs, including single-pane windows. Their display label
 # still includes the window name; split windows retain the familiar w.p label.
 build_pane_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since
-  local eff act label kind mode="${1:-list}"
+  local eff act label kind group mode="${1:-list}"
   while IFS="$TAB" read -r s_id s_name s_act w_id w_idx w_act w_name w_panes \
     p_id p_idx p_cmd p_path state since; do
+    case "$s_name" in *subagents*) group=1 ;; *) group=0 ;; esac
+    # Direct jumps ignore subagent contexts, not the pane's other memberships.
+    [ "$mode" != targets ] || [ "$group" -eq 0 ] || continue
     w_name="${w_name#x}"
     p_cmd="${p_cmd#x}"
     case "$p_cmd" in
@@ -135,8 +140,8 @@ build_pane_rows() {
     # activity. Use the later timestamp without changing the tracked state.
     act="$s_act"
     [ "$w_act" -gt "$act" ] && act="$w_act"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t' \
-      "$(state_priority "$eff")" "$act" "$s_name" "$w_idx" "$p_idx" "$p_id"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t' \
+      "$group" "$(state_priority "$eff")" "$act" "$s_name" "$w_idx" "$p_idx" "$p_id"
     # Direct jumps need only opaque IDs, not icons or display formatting.
     if [ "$mode" = targets ]; then
       printf '%s\t%s\n' "$s_id" "$w_id"
@@ -162,31 +167,37 @@ build_pane_rows() {
 # The label row shares the column run and therefore exactly matches its widths.
 # Header tabs are not expanded by fzf, so that line gets a space-padded gutter.
 align_pane_rows() {
-  local mode="${1:-list}" rows all NL=$'\n'
+  local mode="${1:-list}" rows all has_column=0 NL=$'\n'
   rows="$(cat)"
   [ -n "$rows" ] || return 0
-  if ! command -v column >/dev/null 2>&1; then
-    [ "$mode" = header ] && return 0
-    awk -F "$TAB" -v gutter="${GUTTER:-0}" '{
-      out = $1 "\t" (gutter > 0 ? $2 "\t" : ""); sep = ""
-      for (i = 3; i <= 6; i++) if ($i != "") { out = out sep $i; sep = " " }
-      print out "\t" $7 "\t" $8
-    }' <<<"$rows"
-    return 0
-  fi
+  command -v column >/dev/null 2>&1 && has_column=1
+  [ "$has_column" -eq 1 ] || [ "$mode" != header ] || return 0
   all="${TAB}${TAB}session${TAB}pane${TAB}command${TAB}path${TAB}${TAB}${NL}${rows}"
+  # Carry the original session name alongside the aligned text. Decorate only
+  # that prefix AFTER column measures it, including names containing spaces.
+  # Reset with SGR 0: fzf 0.40 ignores SGR 22 and would dim the remaining columns.
   paste <(cut -f1,2 <<<"$all") \
     <(cut -f3-6 <<<"$all" |
-      awk -F "$TAB" -v OFS="$TAB" '{ for (i = 1; i < NF; i++) if ($i == "") $i = " "; print }' |
-      column -t -s "$TAB") <(cut -f7,8 <<<"$all") |
-    case "$mode" in
-      header) awk -F "$TAB" -v pad="${GUTTER:-0}" 'NR == 1 { printf "%*s%s\n", pad, "", $3; exit }' ;;
-      *) if [ "${GUTTER:-0}" -gt 0 ]; then sed 1d; else sed 1d | cut -f1,3-; fi ;;
-    esac
+      if [ "$has_column" -eq 1 ]; then
+        awk -F "$TAB" -v OFS="$TAB" '{ for (i = 1; i < NF; i++) if ($i == "") $i = " "; print }' |
+          column -t -s "$TAB"
+      else
+        awk -F "$TAB" '{ sep = ""; for (i = 1; i <= NF; i++) if ($i != "") {
+          printf "%s%s", sep, $i; sep = " "
+        }; printf "\n" }'
+      fi) <(cut -f3,7,8 <<<"$all") |
+    awk -F "$TAB" -v mode="$mode" -v gutter="${GUTTER:-0}" -v dim=$'\033[2m' -v off=$'\033[0m' '
+      NR == 1 { if (mode == "header") printf "%*s%s\n", gutter, "", $3; next }
+      mode != "header" {
+        text = $3
+        if (index($4, "subagents"))
+          text = dim substr(text, 1, length($4)) off substr(text, length($4) + 1)
+        print $1 "\t" (gutter > 0 ? $2 "\t" : "") text "\t" $5 "\t" $6
+      }'
 }
 
-# Both interactive selection and direct jumps use this ranking and linked-pane
-# context. Targets mode returns just pane/session/window IDs; list mode retains
+# Shared within-group ranking and linked-pane context. Targets mode excludes
+# subagent sessions and returns only pane/session/window IDs. List mode retains
 # display fields between the pane ID and its session/window context.
 ranked_rows() {
   local FILTER="$1" TIMEOUT NOW rows
@@ -195,13 +206,13 @@ ranked_rows() {
   rows="$(tmux list-panes -a -F "$LIST_FMT")" || return 1
   [ -n "$rows" ] || return 0
   printf '%s\n' "$rows" | build_pane_rows "${2:-list}" |
-    LC_ALL=C sort -t "$TAB" -k1,1n -k2,2nr -k3,3 -k4,4n -k5,5n -k6,6 |
-    awk -F "$TAB" '!seen[$6]++' | cut -f6-
+    LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3nr -k4,4 -k5,5n -k6,6n -k7,7 |
+    awk -F "$TAB" '!seen[$7]++' | cut -f7-
 }
 
 # Fzf rows are "pane-id TAB display TAB session-id TAB window-id". Linked
-# windows may appear in several sessions: keep each pane's highest-ranked
-# context and carry it through selection, rather than resolving it afresh.
+# windows may appear in several sessions: prefer ordinary membership, then its
+# highest-ranked context, and carry that context through selection.
 list_rows() {
   local FILTER
   local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE GUTTER
@@ -299,16 +310,16 @@ jump() {
 
 attention_require tmux || exit 1
 if [ "${1:-}" = --jump ]; then
-  # A cold server has nothing to jump to. Outside tmux, reject a missing tty
-  # before setup or changing any pane/window selection for an eventual attach.
+  # A cold/empty server or subagent-only server has no eligible destination.
+  # Determine that read-only, before tty requirements or automatic setup.
   sessions="$(tmux list-sessions -F '#{session_id}' 2>/dev/null)" || exit 0
   [ -n "$sessions" ] || exit 0 # exit-empty=off can leave a running empty server.
-  if [ -z "${TMUX:-}" ]; then attention_require_terminal || exit 1; fi
-  ensure_server_hooks || exit 1
   # Capture the complete ranking to propagate lookup errors without a head/SIGPIPE
   # shortcut. Never read or rewrite the interactive picker's remembered filter.
   selection="$(ranked_rows all targets)" || exit 1
   [ -n "$selection" ] || exit 0
+  if [ -z "${TMUX:-}" ]; then attention_require_terminal || exit 1; fi
+  ensure_server_hooks || exit 1
   selection="${selection%%$'\n'*}"
   IFS="$TAB" read -r target session window <<<"$selection"
   jump "$target" "$session" "$window"
@@ -326,7 +337,7 @@ I_UNKNOWN="$(state_icon unknown)" I_WORKING="$(state_icon working)" I_IDLE="$(st
 GUTTER="$(icon_gutter)"
 # The input is already ranked. Queries must only filter, never promote a
 # fuzzy-match score over attention priority or activity.
-fzf_args=(--reverse --no-sort --no-tac --no-multi --prompt 'panes > '
+fzf_args=(--ansi --reverse --no-sort --no-tac --no-multi --prompt 'panes > '
   --delimiter "$TAB" --with-nth '2..-3' --header "$(header_text)")
 [ "$GUTTER" -gt 0 ] && fzf_args+=(--tabstop "$GUTTER")
 callback="$(attention_shell_quote "$SELF")"

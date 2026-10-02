@@ -29,7 +29,7 @@ existing sessions and directories.
 - `scripts/seen.sh` — focus-hook handler: focused panes in a notifying
   state (blocked/failed/done) downgrade to idle.
 - `scripts/picker.sh` — shared pane ranking/jump and the flat pane picker:
-  command filtering, column alignment, and confirmed pane kill.
+  ordinary/subagent grouping, command filtering, column alignment, and pane kill.
 - `scripts/new-session.sh` — combined session/directory picker and direct
   directory → session named after its canonical leaf. Private implementation,
   not public API. Both pickers run in the invoking terminal.
@@ -38,9 +38,9 @@ existing sessions and directories.
 - `tests/run-tests.sh` — acceptance tests against isolated tmux servers
   (`-L` sockets), including native-format-tests.sh (priorities, live icons and
   staleness), cli-tests.sh, directory-tests.sh (source-pane cleanup),
-  pane-picker-tests.sh (including pane-filter-tests.sh), launcher-tests.sh,
-  jump-tests.sh, and terminal-tests.sh (real PTYs, including direct jumps,
-  shell/popup cleanup, and pane filtering),
+  pane-picker-tests.sh (including pane-filter-tests.sh), subagent-pane-tests.sh,
+  launcher-tests.sh, jump-tests.sh, and terminal-tests.sh (real PTYs, including
+  direct jumps, shell/popup cleanup, pane filtering, and subagent grouping),
   package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
@@ -171,23 +171,32 @@ existing sessions and directories.
   Keep session and directory entries even when they share a destination;
   directory reuse stays exact-name-based, with no ownership model.
 - **Pane navigation**: `tmux-attention panes` lists each pane once in a flat
-  session/pane/command/path table, ordered by attention priority, descending
-  activity, then stable ties.
-  Linked panes retain the displayed session/window IDs in hidden trailing
-  fields; use that context for jumping, and only the pane ID for killing.
+  session/pane/command/path table: ordinary sessions first, then sessions whose
+  names contain case-sensitive `subagents`. Within each group, order by attention
+  priority, descending activity, then stable ties. Group BEFORE deduplicating:
+  any ordinary membership wins for linked panes, retaining its highest-ranked
+  ordinary context. Carry session/window IDs in hidden trailing fields for
+  navigation; use only the pane ID for killing. Dim only subagent session names
+  AFTER text alignment, with fzf `--ansi`; leave icons unchanged. Reset with SGR 0
+  because fzf 0.40 ignores SGR 22. All rows remain selectable panes (fzf 0.40 has
+  no non-selectable in-list headings). Native
+  attention aggregates and combined navigation include subagents as before.
   Both pickers use fuzzy search only to filter, preserving input order. Keep
   ordering fixed and the commands separate: no tree expansion, view/sort
   switching, remembered sort/view state, or tree-icon configuration.
-- **Direct jump**: `tmux-attention jump` selects the highest-ranked pane across
-  all panes, ignoring and preserving the picker filter. Reuse the picker's
+- **Direct jump**: `tmux-attention jump` selects the highest-ranked ordinary
+  pane, ignoring and preserving the picker filter. Exclude subagent-only panes;
+  linked panes remain eligible through ordinary contexts. Reuse within-group
   ranking and validated session/window/pane IDs, without fzf/column rendering.
-  Current, idle, and untracked panes stay eligible. It never closes the source;
+  Current, idle, and untracked ordinary panes stay eligible. Preserve the source;
   arrival uses normal seen hooks. Headless inside tmux is valid; outside,
-  require a tty before setup/selection. With no panes, return 0 without creating
-  a server. Bindings remain user-owned.
+  require a tty before setup/selection. With no eligible panes, silently return
+  0 BEFORE setup or tty checks, without creating a server. Bindings stay user-owned.
 - **Pane filtering**: shift-tab cycles all → agents → non-agents → all while
-  keeping the query and attention order. An agent has `pane_current_command`
-  exactly `pi`, `claude`, or `codex`, independently of attention state/title.
+  keeping the query and within-group order. An agent has `pane_current_command`
+  exactly `pi`, `claude`, or `codex`, independently of attention state/title or
+  subagent-session membership. Search/filter/Enter/K apply equally to both groups;
+  an empty group reserves no space.
   Persist `all`/`agents`/`non-agents` in global `@attention_picker_filter`;
   unset/invalid means all. This is shared server-lifetime runtime state, not
   configuration. Rendering is read-only; cycling on a cold server is a no-op.

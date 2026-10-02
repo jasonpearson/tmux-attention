@@ -342,6 +342,7 @@ assert_eq 'run preserves arbitrary exit code' "$?" 7
 # --- independent pane picker and combined launcher ---------------------------
 
 source "$DIR/tests/pane-picker-tests.sh"
+source "$DIR/tests/subagent-pane-tests.sh"
 source "$DIR/tests/jump-tests.sh"
 source "$DIR/tests/launcher-tests.sh"
 

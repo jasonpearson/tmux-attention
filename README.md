@@ -82,7 +82,7 @@ alias t='tmux-attention'
 
 t                    # choose an existing session or a project directory
 t panes              # choose a pane by attention priority
-t jump               # immediately focus the highest-ranked pane (no picker)
+t jump               # focus the highest-ranked ordinary pane (no picker)
 t .                  # create/reuse the current directory's session
 t ~/code/api          # create/reuse the api session
 t run -- make test    # working -> done/failed, preserving the exit code
@@ -159,10 +159,21 @@ navigation-only: it has no kill action.
 ### Panes: `tmux-attention panes`
 
 A flat table shows each pane's session, pane label, command, and path on the
-selected server, ordered by attention priority:
+selected server. **Ordinary sessions come first**, followed by **subagent
+sessions**: names containing the case-sensitive substring `subagents`, such as
+`pi-subagents` or `review-subagents`. Subagent session names are dimmed, but
+attention icons are unchanged. All panes remain expanded, without divider rows.
+
+Within each group, panes are ordered by attention priority:
 failed → blocked → done → unknown → working → idle → untracked.
 Within a priority, the latest activity comes first, with stable tie-breaks.
-Fuzzy search filters the table without reordering it.
+Even an untracked ordinary pane precedes a failed subagent pane. Linked panes
+appear only once; membership in any ordinary session wins, and navigation uses
+that ordinary-session context.
+
+Fuzzy search filters without reordering. Search and the keys below apply to
+both groups; an empty group reserves no space. Grouping does not change native
+attention indicators or the session/directory picker.
 
 - **enter** — jump to the selected pane.
 - **shift-tab** — cycle **all panes → agent panes → non-agent panes → all panes**.
@@ -174,7 +185,8 @@ The header shows the active pane filter. Agent panes are those whose current
 command is exactly `pi`, `claude`, or `codex`, regardless of attention state;
 every other command is non-agent. This is a lightweight heuristic: an agent
 shown as `node`, `bash`, or `ssh` is not detected through its child processes.
-Cycling preserves your search query and attention ordering, even when a filter
+This command filter is independent of the session-name-based subagent grouping.
+Cycling preserves your search query and within-group ordering, even when a filter
 has no matches. The choice is shared across clients on the same tmux server
 and remembered across picker openings (including after cancel), starting at
 **all panes** on a fresh server. It does not affect the session/directory picker
@@ -188,24 +200,27 @@ pane shell follow the cleanup rule above.
 
 ### Immediate attention jump: `tmux-attention jump`
 
-Skip the picker and focus the highest-ranked pane across **all panes**, using
-the same attention priority, stale-state handling, recency, and stable tie-breaks
-as the pane picker. The saved all/agents/non-agents filter is ignored and left
-unchanged. The current pane, idle panes, and untracked panes remain eligible;
-this is not a next-pane cycle or a notifications-only command.
+Skip the picker and focus the highest-ranked **ordinary pane**, using the same
+attention priority, stale-state handling, recency, and stable tie-breaks as the
+pane picker. Panes accessible only through subagent sessions are excluded;
+linked panes remain eligible through any ordinary session they belong to.
+The saved all/agents/non-agents filter is ignored and left unchanged. Current,
+idle, and untracked ordinary panes remain eligible; this is not a next-pane
+cycle or a notifications-only command.
 
 Inside tmux, `jump` works headlessly, including from a `run-shell` key binding.
 Outside tmux it attaches and requires a terminal. It never closes the source
 pane, and normal seen-rule hooks clear the destination's notification on arrival.
-With no panes, it exits successfully without creating a server. Neither fzf nor
-`column` is needed.
+With no eligible panes (including a server containing only subagent sessions),
+it silently succeeds without setup, a terminal, or creating a server. Neither
+fzf nor `column` is needed.
 
 ## CLI reference
 
 ```text
 tmux-attention                     # combined session/directory picker
-tmux-attention panes               # flat attention-ordered pane picker
-tmux-attention jump                # immediately focus the top pane, unfiltered
+tmux-attention panes               # ordinary panes, then subagents; ranked within each
+tmux-attention jump                # top ordinary pane, ignoring the picker filter
 tmux-attention directory           # create/reuse the directory's session
 tmux-attention -- directory        # disambiguate a reserved name/leading dash
 

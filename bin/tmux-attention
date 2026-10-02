@@ -20,8 +20,8 @@ usage: tmux-attention [directory]
        tmux-attention run [--] <command> [args...]
 
   (no arguments)      pick a session or directory on a terminal
-  panes               pick a pane, ordered by attention then recent activity
-  jump                jump to the highest-ranked pane across all panes
+  panes               pick a pane; ordinary sessions first, subagents last
+  jump                jump to the highest-ranked ordinary pane, ignoring filters
   directory           create/reuse its session; use . for the current directory
   -- directory        treat a reserved name (panes, jump, run, help) as a directory
 
@@ -39,11 +39,13 @@ usage: tmux-attention [directory]
 
 Navigation switches the client inside tmux and attaches outside it. The default
 picker lists sessions by recent activity, then directories in source order.
-Search filters without reordering. The panes picker keeps attention order;
-shift-tab cycles all/agent/non-agent panes (remembered for this server), and K
-confirms pane killing. Neither picker switches views or sorting.
-Jump uses the same ranking across all panes, ignoring the picker filter. It
-needs no fzf, preserves the source pane, and does nothing when no panes exist.
+Search filters without reordering. The panes picker lists ordinary sessions first,
+then sessions whose names contain lowercase "subagents", dimming those names.
+Each group keeps attention/recency order; shift-tab cycles all/agent/non-agent
+panes (remembered for this server), and K confirms pane killing in either group.
+Neither picker switches views or sorting. Linked panes prefer ordinary sessions.
+Jump ignores the picker filter and skips panes only in subagent sessions. It
+needs no fzf, preserves the source pane, and does nothing with no eligible panes.
 Directory arguments and directory selections from a pane shell close that pane
 after switching to a different session (and its session if it was the last pane).
 Popup directory selections, session/pane selections, failed navigation and
