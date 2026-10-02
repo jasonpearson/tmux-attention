@@ -15,13 +15,15 @@ usage() {
   cat <<'EOF'
 usage: tmux-attention [directory]
        tmux-attention panes
+       tmux-attention jump
        tmux-attention <state|clear|toggle> [pane_id]
        tmux-attention run [--] <command> [args...]
 
   (no arguments)      pick a session or directory on a terminal
   panes               pick a pane, ordered by attention then recent activity
+  jump                jump to the highest-ranked pane across all panes
   directory           create/reuse its session; use . for the current directory
-  -- directory        treat a reserved name (panes, run, help) as a directory
+  -- directory        treat a reserved name (panes, jump, run, help) as a directory
 
   working  [pane_id]   process started/resumed running
   blocked  [pane_id]   process needs input/approval (seen rule applies)
@@ -40,11 +42,14 @@ picker lists sessions by recent activity, then directories in source order.
 Search filters without reordering. The panes picker keeps attention order;
 shift-tab cycles all/agent/non-agent panes (remembered for this server), and K
 confirms pane killing. Neither picker switches views or sorting.
+Jump uses the same ranking across all panes, ignoring the picker filter. It
+needs no fzf, preserves the source pane, and does nothing when no panes exist.
 Directory arguments and directory selections from a pane shell close that pane
 after switching to a different session (and its session if it was the last pane).
 Popup directory selections, session/pane selections, failed navigation and
 same-session navigation leave the pane open.
 Bare invocation and panes require a terminal; otherwise usage and exit 1.
+Jump works headlessly inside tmux; outside, attaching requires a terminal.
 
 pane_id defaults to $TMUX_PANE. Outside tmux state commands are silent no-ops;
 run still executes its command and preserves its exit code. Seen-rule hooks and
@@ -130,6 +135,10 @@ case "$cmd" in
         ;;
     esac
     exit 0
+    ;;
+  jump)
+    [ "$#" -eq 1 ] || usage_error 'jump takes no arguments'
+    exec "$CURRENT_DIR/scripts/picker.sh" --jump
     ;;
   panes)
     [ "$#" -eq 1 ] || usage_error 'panes takes no arguments'

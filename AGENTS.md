@@ -16,8 +16,8 @@ existing sessions and directories.
 
 - `attention.tmux` — optional TPM/tpack adapter registering the same native
   formats and seen hooks as CLI use, without theme rewrites or bindings.
-- `bin/tmux-attention` — public CLI: combined navigation, `panes`, directory
-  argument, states, clear/toggle, run, help/version. Resolves executable symlinks.
+- `bin/tmux-attention` — public CLI: combined navigation, `panes`, `jump`,
+  directory argument, states, clear/toggle, run, help/version. Resolves symlinks.
   Implements the seen rule and blocked guard in `record()`.
 - `scripts/helpers.sh` — shared functions; sourced, never executed.
   Environment/option access, automatic idempotent setup, state priorities,
@@ -28,8 +28,8 @@ existing sessions and directories.
   `#{T:@attention_session}` etc. No shell render jobs.
 - `scripts/seen.sh` — focus-hook handler: focused panes in a notifying
   state (blocked/failed/done) downgrade to idle.
-- `scripts/picker.sh` — flat pane picker: command filtering, attention ordering,
-  column alignment, jump, and confirmed pane kill.
+- `scripts/picker.sh` — shared pane ranking/jump and the flat pane picker:
+  command filtering, column alignment, and confirmed pane kill.
 - `scripts/new-session.sh` — combined session/directory picker and direct
   directory → session named after its canonical leaf. Private implementation,
   not public API. Both pickers run in the invoking terminal.
@@ -39,7 +39,8 @@ existing sessions and directories.
   (`-L` sockets), including native-format-tests.sh (priorities, live icons and
   staleness), cli-tests.sh, directory-tests.sh (source-pane cleanup),
   pane-picker-tests.sh (including pane-filter-tests.sh), launcher-tests.sh,
-  terminal-tests.sh (real PTYs, including shell/popup cleanup and pane filtering),
+  jump-tests.sh, and terminal-tests.sh (real PTYs, including direct jumps,
+  shell/popup cleanup, and pane filtering),
   package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
@@ -132,7 +133,8 @@ existing sessions and directories.
 - Bindings belong to the user's tmux config, not CLI/plugin setup. The CLI
   never creates popups. Document opt-in `display-popup` bindings: prefix+a
   calls `tmux-attention panes`, prefix+A calls bare `tmux-attention`; shell
-  aliases remain bare. Use `run-shell` for state bindings. Use stable mise
+  aliases remain bare. Use `run-shell` for state bindings and prefix+O calling
+  `tmux-attention jump`. Use stable mise
   shims or `mise exec` rather than versioned installation paths. Read CLI
   preferences at invocation time, never capture them during plugin loading.
   If a popup needs POSIX setup commands, pass `/bin/sh -c` argv explicitly;
@@ -158,8 +160,9 @@ existing sessions and directories.
   Missing/unverifiable terminal identity preserves the pane; explicit
   arguments retain headless cleanup. Preserve source panes on failure,
   session/pane selections, and when they belong to the destination (including
-  linked windows). `panes` is reserved: use `./panes` or `-- panes` for that
-  directory. `pick`/`new`/`init` remain ordinary directory names, not commands.
+  linked windows). `panes` and `jump` are reserved: use `./panes` / `-- panes`
+  or `./jump` / `-- jump` for those directories. `pick`/`new`/`init` remain
+  ordinary directory names, not commands.
 - **Combined navigation**: bare invocation always combines every session on
   the selected server (including manual/renamed sessions) with directories.
   `[session] name` rows come first, ordered by descending
@@ -175,6 +178,13 @@ existing sessions and directories.
   Both pickers use fuzzy search only to filter, preserving input order. Keep
   ordering fixed and the commands separate: no tree expansion, view/sort
   switching, remembered sort/view state, or tree-icon configuration.
+- **Direct jump**: `tmux-attention jump` selects the highest-ranked pane across
+  all panes, ignoring and preserving the picker filter. Reuse the picker's
+  ranking and validated session/window/pane IDs, without fzf/column rendering.
+  Current, idle, and untracked panes stay eligible. It never closes the source;
+  arrival uses normal seen hooks. Headless inside tmux is valid; outside,
+  require a tty before setup/selection. With no panes, return 0 without creating
+  a server. Bindings remain user-owned.
 - **Pane filtering**: shift-tab cycles all → agents → non-agents → all while
   keeping the query and attention order. An agent has `pane_current_command`
   exactly `pi`, `claude`, or `codex`, independently of attention state/title.

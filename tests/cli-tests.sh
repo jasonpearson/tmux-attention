@@ -6,7 +6,7 @@ assert_contains 'version identifies the installed release' \
   "$("$BIN" --version)" "tmux-attention $(<"$DIR/VERSION")"
 assert_eq 'help does not advertise an init command' \
   "$("$BIN" --help | grep -Ec 'tmux-attention init|^  init[[:space:]]')" 0
-for args in 'run' 'init extra' '--help extra' 'help extra' '--version extra' 'working one two' '--' '-- one two' '--bogus' 'panes extra' 'panes --'; do
+for args in 'run' 'init extra' '--help extra' 'help extra' '--version extra' 'working one two' '--' '-- one two' '--bogus' 'panes extra' 'panes --' 'jump extra' 'jump --' 'jump --help' 'jump %0'; do
   # Intentional word splitting: every case consists of simple fixed words.
   "$BIN" $args >/dev/null 2>&1
   assert_eq "invalid arguments fail: $args" "$?" 1
@@ -24,6 +24,9 @@ assert_contains 'help prints usage' "$(inside "$B1" "$BIN" help)" 'usage: tmux-a
 inside "$B1" "$BIN" help >/dev/null
 assert_eq 'help exits 0' "$?" 0
 assert_contains 'help advertises the pane command' "$("$BIN" help)" 'tmux-attention panes'
+assert_contains 'help advertises the jump command' "$("$BIN" help)" 'tmux-attention jump'
+assert_eq 'help lists jump as a public action' \
+  "$("$BIN" help | grep -Ec '^  jump[[:space:]]')" 1
 assert_eq 'help no longer advertises view cycling' \
   "$("$BIN" help | grep -c 'Shift-tab')" 0
 "$BIN" panes >/dev/null 2>&1
@@ -71,9 +74,9 @@ T set-option -g @attention_formats_version "$fv_before"
 T set -pu -t "$B1" @attention_state
 
 # Directory disambiguation at the public boundary. init and pick are ordinary
-# names; run, help and panes are reserved. -- or ./ protects these directories.
+# names; run, help, panes and jump are reserved. -- or ./ protects directories.
 mkdir -p "$TEST_TMP/args/run" "$TEST_TMP/args/--header" "$TEST_TMP/args/pick" \
-  "$TEST_TMP/args/init" "$TEST_TMP/args/help" "$TEST_TMP/args/panes"
+  "$TEST_TMP/args/init" "$TEST_TMP/args/help" "$TEST_TMP/args/panes" "$TEST_TMP/args/jump"
 (
   cd "$TEST_TMP/args" || exit 1
   from_directory_pane "$BIN" -- run
@@ -84,8 +87,17 @@ mkdir -p "$TEST_TMP/args/run" "$TEST_TMP/args/--header" "$TEST_TMP/args/pick" \
   from_directory_pane "$BIN" pick
   from_directory_pane "$BIN" init
 )
+(cd "$TEST_TMP/args" && from_directory_pane "$BIN" -- jump)
+assert_eq 'literal -- jump directory navigation succeeds' "$?" 0
+assert_eq 'literal -- jump directory navigation switches to its session' \
+  "$(T list-clients -F '#{session_name}')" jump
 T switch-client -c "$CLIENT" -t beta
-for name in run --header help panes pick init; do
+(cd "$TEST_TMP/args" && from_directory_pane "$BIN" ./jump)
+assert_eq 'literal ./jump directory navigation succeeds' "$?" 0
+assert_eq 'literal ./jump directory navigation reuses its session' \
+  "$(T list-clients -F '#{session_name}')" jump
+T switch-client -c "$CLIENT" -t beta
+for name in run --header help panes jump pick init; do
   assert_eq "literal directory creates session: $name" \
     "$(T has-session -t "=$name" 2>/dev/null && echo yes)" yes
   assert_eq "literal directory roots session correctly: $name" \

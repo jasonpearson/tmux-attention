@@ -3,6 +3,7 @@
 # Run in the caller's terminal; enter switches inside tmux or attaches outside.
 #
 #   picker.sh                    interactive pane picker
+#   picker.sh --jump             jump to the top-ranked pane, ignoring filters
 #   picker.sh --list             print rows (fzf reload)
 #   picker.sh --header           print the header (fzf transform-header)
 #   picker.sh --cycle-filter     remember all -> agents -> non-agents -> all
@@ -115,7 +116,7 @@ header_text() {
 # still includes the window name; split windows retain the familiar w.p label.
 build_pane_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since
-  local eff act label kind
+  local eff act label kind mode="${1:-list}"
   while IFS="$TAB" read -r s_id s_name s_act w_id w_idx w_act w_name w_panes \
     p_id p_idx p_cmd p_path state since; do
     w_name="${w_name#x}"
@@ -130,17 +131,23 @@ build_pane_rows() {
     since="${since#x}"
     eff=''
     [ -n "$state" ] && eff="$(effective_state "$state" "$since" "$TIMEOUT" "$NOW")"
+    # tmux exposes window output and session input activity, not per-pane
+    # activity. Use the later timestamp without changing the tracked state.
+    act="$s_act"
+    [ "$w_act" -gt "$act" ] && act="$w_act"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t' \
+      "$(state_priority "$eff")" "$act" "$s_name" "$w_idx" "$p_idx" "$p_id"
+    # Direct jumps need only opaque IDs, not icons or display formatting.
+    if [ "$mode" = targets ]; then
+      printf '%s\t%s\n' "$s_id" "$w_id"
+      continue
+    fi
     if [ "$w_panes" -eq 1 ]; then
       label="${w_idx}:${w_name}"
     else
       label="${w_idx}.${p_idx}"
     fi
-    # tmux exposes window output and session input activity, not per-pane
-    # activity. Use the later timestamp without changing the tracked state.
-    act="$s_act"
-    [ "$w_act" -gt "$act" ] && act="$w_act"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(state_priority "$eff")" "$act" "$s_name" "$w_idx" "$p_idx" "$p_id" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(icon_for "$eff")" "$s_name" "$label" "$p_cmd" "$(shorten_path "$p_path")" "$s_id" "$w_id"
   done
 }
@@ -178,17 +185,29 @@ align_pane_rows() {
     esac
 }
 
+# Both interactive selection and direct jumps use this ranking and linked-pane
+# context. Targets mode returns just pane/session/window IDs; list mode retains
+# display fields between the pane ID and its session/window context.
+ranked_rows() {
+  local FILTER="$1" TIMEOUT NOW rows
+  TIMEOUT="$(stale_timeout_seconds)"
+  NOW="$(date +%s)"
+  rows="$(tmux list-panes -a -F "$LIST_FMT")" || return 1
+  [ -n "$rows" ] || return 0
+  printf '%s\n' "$rows" | build_pane_rows "${2:-list}" |
+    LC_ALL=C sort -t "$TAB" -k1,1n -k2,2nr -k3,3 -k4,4n -k5,5n -k6,6 |
+    awk -F "$TAB" '!seen[$6]++' | cut -f6-
+}
+
 # Fzf rows are "pane-id TAB display TAB session-id TAB window-id". Linked
 # windows may appear in several sessions: keep each pane's highest-ranked
 # context and carry it through selection, rather than resolving it afresh.
 list_rows() {
-  local TIMEOUT NOW FILTER rows
+  local FILTER
   local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE GUTTER
   tmux list-sessions >/dev/null 2>&1 || return 0
   # Header labels and their rows use the same mode snapshot.
   FILTER="${2:-$(picker_filter)}"
-  TIMEOUT="$(stale_timeout_seconds)"
-  NOW="$(date +%s)"
   I_BLOCKED="$(state_icon blocked)"
   I_FAILED="$(state_icon failed)"
   I_DONE="$(state_icon done)"
@@ -196,11 +215,7 @@ list_rows() {
   I_WORKING="$(state_icon working)"
   I_IDLE="$(state_icon idle)"
   GUTTER="$(icon_gutter)"
-  rows="$(tmux list-panes -a -F "$LIST_FMT")" || return 1
-  [ -n "$rows" ] || return 0
-  printf '%s\n' "$rows" | build_pane_rows |
-    LC_ALL=C sort -t "$TAB" -k1,1n -k2,2nr -k3,3 -k4,4n -k5,5n -k6,6 |
-    awk -F "$TAB" '!seen[$6]++' | cut -f6- | align_pane_rows "${1:-list}"
+  ranked_rows "$FILTER" | align_pane_rows "${1:-list}"
 }
 
 # fzf's field expansion can retain an outer tab. Trim only outer whitespace;
@@ -258,6 +273,7 @@ case "${1:-}" in
     case "$reply" in y | Y) kill_target "$target"; exit "$?" ;; esac
     exit 0
     ;;
+  --jump) [ "$#" -eq 1 ] || exit 1 ;;
   '') [ "$#" -eq 0 ] || exit 1 ;;
   *) printf 'tmux-attention: unknown pane picker argument: %s\n' "$1" >&2; exit 1 ;;
 esac
@@ -282,6 +298,22 @@ jump() {
 }
 
 attention_require tmux || exit 1
+if [ "${1:-}" = --jump ]; then
+  # A cold server has nothing to jump to. Outside tmux, reject a missing tty
+  # before setup or changing any pane/window selection for an eventual attach.
+  sessions="$(tmux list-sessions -F '#{session_id}' 2>/dev/null)" || exit 0
+  [ -n "$sessions" ] || exit 0 # exit-empty=off can leave a running empty server.
+  if [ -z "${TMUX:-}" ]; then attention_require_terminal || exit 1; fi
+  ensure_server_hooks || exit 1
+  # Capture the complete ranking to propagate lookup errors without a head/SIGPIPE
+  # shortcut. Never read or rewrite the interactive picker's remembered filter.
+  selection="$(ranked_rows all targets)" || exit 1
+  [ -n "$selection" ] || exit 0
+  selection="${selection%%$'\n'*}"
+  IFS="$TAB" read -r target session window <<<"$selection"
+  jump "$target" "$session" "$window"
+  exit "$?"
+fi
 attention_require fzf || exit 1
 attention_require_terminal || exit 1
 if tmux list-sessions >/dev/null 2>&1; then

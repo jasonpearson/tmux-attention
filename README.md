@@ -18,7 +18,7 @@ notifying pane clears its notification automatically.
 Requires Bash ≥ 3.2 and tmux ≥ 3.3. Interactive navigation also requires
 [fzf](https://github.com/junegunn/fzf) ≥ 0.40 (≥ 0.48 for the default directory
 walker). `column` is optional for aligning the panes table. Direct directory
-entry, state commands, and `run` do not need fzf.
+entry, `jump`, state commands, and `run` do not need fzf.
 
 ### Mise
 
@@ -82,6 +82,7 @@ alias t='tmux-attention'
 
 t                    # choose an existing session or a project directory
 t panes              # choose a pane by attention priority
+t jump               # immediately focus the highest-ranked pane (no picker)
 t .                  # create/reuse the current directory's session
 t ~/code/api          # create/reuse the api session
 t run -- make test    # working -> done/failed, preserving the exit code
@@ -99,7 +100,8 @@ symlinks work). The session is named after the resolved directory's leaf;
 `.` and `:` become `_`, and `/` becomes `root`. An existing session of that
 exact name wins, even if it was created for another directory with the same
 leaf. Command names are reserved: use `./panes` or `-- panes` for a directory
-named `panes` (likewise `./run` or `-- run`).
+named `panes`. Other command names, including `jump` and `run`, need the same
+disambiguation (`./jump` or `-- jump`, for example).
 
 Inside tmux, a directory argument or a directory selected from a pane shell
 **closes the invoking pane after switching** to a different session. If it was
@@ -175,7 +177,8 @@ shown as `node`, `bash`, or `ssh` is not detected through its child processes.
 Cycling preserves your search query and attention ordering, even when a filter
 has no matches. The choice is shared across clients on the same tmux server
 and remembered across picker openings (including after cancel), starting at
-**all panes** on a fresh server. It does not affect the session/directory picker.
+**all panes** on a fresh server. It does not affect the session/directory picker
+or the direct `jump` command.
 
 In both pickers, **ctrl-c / esc** quits back to the terminal and movement stays
 fzf's own, including **ctrl-n/ctrl-p** and **ctrl-j/ctrl-k**. There is no tree,
@@ -183,11 +186,26 @@ expansion, view cycling, or sort switching. Session/pane selections and popup
 directory selections preserve the invoking pane; directory selections from a
 pane shell follow the cleanup rule above.
 
+### Immediate attention jump: `tmux-attention jump`
+
+Skip the picker and focus the highest-ranked pane across **all panes**, using
+the same attention priority, stale-state handling, recency, and stable tie-breaks
+as the pane picker. The saved all/agents/non-agents filter is ignored and left
+unchanged. The current pane, idle panes, and untracked panes remain eligible;
+this is not a next-pane cycle or a notifications-only command.
+
+Inside tmux, `jump` works headlessly, including from a `run-shell` key binding.
+Outside tmux it attaches and requires a terminal. It never closes the source
+pane, and normal seen-rule hooks clear the destination's notification on arrival.
+With no panes, it exits successfully without creating a server. Neither fzf nor
+`column` is needed.
+
 ## CLI reference
 
 ```text
 tmux-attention                     # combined session/directory picker
 tmux-attention panes               # flat attention-ordered pane picker
+tmux-attention jump                # immediately focus the top pane, unfiltered
 tmux-attention directory           # create/reuse the directory's session
 tmux-attention -- directory        # disambiguate a reserved name/leading dash
 
@@ -296,13 +314,15 @@ bindings. Do not also maintain another installation through mise.
 ### Opt-in bindings
 
 No keys are installed automatically. Add ordinary tmux bindings for
-**prefix+a** (pane picker), **prefix+A** (session/directory picker), and
-**prefix+h** (manual marking), or choose your own keys. These bindings, not
-the CLI or plugin, create the popups:
+**prefix+a** (pane picker), **prefix+A** (session/directory picker),
+**prefix+O** (immediate attention jump), and **prefix+h** (manual marking), or
+choose your own keys. Only the picker bindings create popups; the CLI and
+plugin never do:
 
 ```tmux
 bind-key a display-popup -E -d '#{pane_current_path}' -w 60% -h 60% 'tmux-attention panes'
 bind-key A display-popup -E -d '#{pane_current_path}' -w 60% -h 60% 'tmux-attention'
+bind-key O run-shell 'tmux-attention jump'
 bind-key h run-shell 'tmux-attention toggle "#{pane_id}"'
 ```
 
@@ -311,6 +331,7 @@ For mise without an activated PATH, use its stable shim instead:
 ```tmux
 bind-key a display-popup -E -d '#{pane_current_path}' -w 60% -h 60% '~/.local/share/mise/shims/tmux-attention panes'
 bind-key A display-popup -E -d '#{pane_current_path}' -w 60% -h 60% '~/.local/share/mise/shims/tmux-attention'
+bind-key O run-shell '~/.local/share/mise/shims/tmux-attention jump'
 bind-key h run-shell '~/.local/share/mise/shims/tmux-attention toggle "#{pane_id}"'
 ```
 

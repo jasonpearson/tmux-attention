@@ -2,7 +2,17 @@
 # Real-PTY acceptance tests without Python/expect. A separate tmux server acts
 # as the terminal emulator; a PATH wrapper confines the tested CLI to another
 # throwaway socket. No calls can reach the user's tmux server.
-set -eu
+set -euE
+# Preserve the command and callers before cleanup removes the isolated servers.
+# A bare tmux error or just T()/D()'s line hides the actual failing fixture step.
+terminal_error() {
+  local rc="$1" command="$2" line="$3" i
+  printf 'FAIL: %s:%s: %s (exit %s)\n' "${BASH_SOURCE[1]}" "$line" "$command" "$rc" >&2
+  for ((i=1; i<${#BASH_SOURCE[@]}-1; i++)); do
+    printf '  called from %s:%s\n' "${BASH_SOURCE[$((i + 1))]}" "${BASH_LINENO[$i]}" >&2
+  done
+}
+trap 'terminal_error "$?" "$BASH_COMMAND" "$LINENO"' ERR
 ROOT="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REAL_TMUX="$(command -v tmux)"
 DRIVER="attention-terminal-driver-$$"
@@ -213,14 +223,16 @@ launch() {
   PANE="$(D new-window -d -P -F '#{pane_id}' "bash $(printf %q "$WORK/launch.sh")")"
 }
 
-# Focused feedback loops: --filter-only or --cleanup-only. Each sourced suite
-# leaves the target server cold for the next suite's first-use assertions.
-if [ "${1:-}" != --cleanup-only ]; then
-  source "$ROOT/tests/pane-filter-terminal-tests.sh"
-fi
-[ "${1:-}" != --filter-only ] || exit 0
+# Focused feedback loops. Each sourced suite leaves the target server cold
+# for the next suite's first-use assertions.
+case "${1:-}" in
+  --jump-only) source "$ROOT/tests/jump-terminal-tests.sh"; exit 0 ;;
+  --filter-only) source "$ROOT/tests/pane-filter-terminal-tests.sh"; exit 0 ;;
+  --cleanup-only) source "$ROOT/tests/picker-cleanup-tests.sh"; exit 0 ;;
+esac
+source "$ROOT/tests/jump-terminal-tests.sh"
+source "$ROOT/tests/pane-filter-terminal-tests.sh"
 source "$ROOT/tests/picker-cleanup-tests.sh"
-[ "${1:-}" != --cleanup-only ] || exit 0
 
 # Even a command that exits immediately must leave its diagnostic inspectable.
 launch "$WORK/missing-directory"
