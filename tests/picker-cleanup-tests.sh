@@ -150,7 +150,7 @@ picker_cleanup_tests() {
   [ ! -f "$WORK/result" ] || fail 'outer attach returned before explicit detach'
   detach
   wait_result 0
-  T kill-server
+  stop_target_server
   TMUX_ATTENTION_DIR_COMMAND="$saved_command"
   printf 'PASS: pane-shell directory cleanup, popup/session preservation, and safe abort/failure\n'
 }

@@ -20,6 +20,7 @@ TARGET="attention-terminal-target-$$"
 WORK="$(cd "$(mktemp -d)" && pwd -P)"
 D() { "$REAL_TMUX" -L "$DRIVER" "$@"; }
 T() { "$REAL_TMUX" -L "$TARGET" "$@"; }
+source "$ROOT/tests/tmux-lifecycle.sh"
 detach() {
   local client
   while IFS= read -r client; do T detach-client -t "$client"; done < <(T list-clients -F '#{client_name}')
@@ -169,7 +170,7 @@ printf '#!/usr/bin/env bash\nexec %q -L %q -f %q "$@"\n' \
   "$REAL_TMUX" "$TARGET" "$WORK/tmux.conf" > "$WORK/bin/tmux"
 chmod +x "$WORK/bin/tmux"
 # Preference and tool defaults must not depend on the invoking user's rc files.
-while IFS= read -r name; do unset "$name"; done < <(compgen -v TMUX_ATTENTION_)
+while IFS= read -r name; do unset "$name"; done < <(compgen -v TMUX_ATTENTION_ || true)
 export TMUX_ATTENTION_DIR_ROOT="$WORK/projects"
 export TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/sample'"
 export FZF_DEFAULT_OPTS='' FZF_DEFAULT_COMMAND=''

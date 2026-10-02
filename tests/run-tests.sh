@@ -510,6 +510,11 @@ assert_contains 'no command without a tty prints usage' \
 # Additional acceptance cases share the isolated server and assertions above.
 source "$DIR/tests/directory-tests.sh"
 source "$DIR/tests/cli-tests.sh"
+if bash "$DIR/tests/tmux-lifecycle-tests.sh"; then
+  ok 'isolated tmux shutdown/restart barrier'
+else
+  not_ok 'isolated tmux shutdown/restart barrier' failed passed
+fi
 if bash "$DIR/tests/terminal-tests.sh"; then
   ok 'real-terminal navigation and attach/switch'
 else

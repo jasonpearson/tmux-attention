@@ -300,7 +300,7 @@ WRAPPER
   wait_result 0
   [ "$(T show-options -gqv exit-empty)" = off ] || fail 'empty-server fixture exited'
   [ -z "$(T list-sessions -F '#{session_id}')" ] || fail 'empty-server jump bootstrapped a session'
-  T kill-server
+  stop_target_server
   mv "$WORK/tmux-before-jump" "$WORK/bin/tmux"
   printf 'PASS: real-terminal jump, headless mise binding, ranking/staleness/context, seen arrival, client/source preservation, and no picker dependencies\n'
 }

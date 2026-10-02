@@ -223,7 +223,7 @@ WRAPPER
 
   # Persisted agents must not outlive the server. A fresh server with only a
   # non-agent tests a truly empty source (not merely an unmatched query).
-  T kill-server
+  stop_target_server
   fresh="$(T -f "$WORK/tmux.conf" new-session -d -s filter-empty -P -F '#{pane_id}' 'sleep 300')"
   T set -p -t "$fresh" @test_filter_command bash
   launch panes
@@ -246,7 +246,7 @@ WRAPPER
   D send-keys -t "$PANE" Escape
   wait_result 0
 
-  T kill-server
+  stop_target_server
   mv "$WORK/tmux-before-filter" "$WORK/bin/tmux"
   printf 'PASS: real-terminal pane filters, exact agent commands, query/ranking, persistence, keys, kill reload, and cold/empty cycling\n'
 }

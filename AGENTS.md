@@ -200,7 +200,9 @@ existing sessions and directories.
 
 - Every behavior change needs coverage in `tests/run-tests.sh`. The
   suite creates its own throwaway server; tests that depend on activity
-  timestamps need >1s spacing (second precision).
+  timestamps need >1s spacing (second precision). For same-socket test restarts,
+  use `stop_target_server` from `tests/tmux-lifecycle.sh`: `kill-server` acknowledges
+  shutdown before the old server finishes exiting.
 - README.md is the only user documentation (there is no SPEC.md). Keep
   these sections in sync with the code: "Attention States" (the table's
   icons and priorities), "Session/directory and pane pickers" (entries, keys,
