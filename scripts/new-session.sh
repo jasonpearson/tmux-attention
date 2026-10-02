@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
-# Fuzzy-find a directory, then go to a session for it: an existing session of
-# that name if there is one, otherwise a new session rooted in the directory
-# and named after its leaf.
+# Session/directory launcher and direct directory navigation (private CLI
+# implementation). Existing sessions lead the list; directories create/reuse
+# sessions named after their canonical leaf. Navigation runs at the top level,
+# outside fzf's stdout capture, so attaching keeps the caller's terminal.
 #
-#   new-session.sh                pick a directory, then create/switch
-#   new-session.sh <dir>          skip the picker, straight to create/switch
-#   new-session.sh --walker-args  print how the directory walk is configured
-#   new-session.sh --header       print the picker's header hints (used by tests)
-#
-# Standalone on purpose: the session picker hands over to this script with
-# `exec` (see picker.sh), a tmux binding can open it directly, and it works from
-# a plain shell — inside tmux it switches the client, outside it attaches. The
-# view key toggles over to the session picker.
+#   new-session.sh                 pick a session or directory
+#   new-session.sh -- <dir>         skip the picker, straight to create/switch
+#   new-session.sh --list           print typed candidates (custom source or tty)
+#   new-session.sh --list-sessions  print session candidates without discovery
+#   new-session.sh --walker-args    print how the directory walk is configured
+#   new-session.sh --header         print the picker's header hints
 
 CURRENT_DIR="$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 source "$CURRENT_DIR/helpers.sh"
-
-PICKER="$CURRENT_DIR/picker.sh"
 
 # Directory names the walk never descends into. fzf's own default is just
 # .git,node_modules; the rest are the caches and build outputs that dominate
@@ -81,70 +77,83 @@ walker_args() {
   return 0
 }
 
-# The directory picker's header hints. The view key — shared with the session
-# picker, where it cycles sessions -> panes -> directories — switches to the session
-# picker from here; the cancel key quits to the terminal. esc quits too (both
-# are fzf's own abort), but it does not get a second hint. The trailing blank
-# line spaces the hints off the list, as the session picker's header does.
+# No view/sort/kill controls in the launcher. Esc always aborts as well.
 dir_header() {
-  local view_key cancel_key hints
-  view_key="$(attention_env TMUX_ATTENTION_PICKER_VIEW_KEY shift-tab)"
+  local cancel_key hints='enter: switch/create'
   cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
-  hints='enter: create/switch'
-  [ -n "$view_key" ] && hints="$hints  |  $view_key: sessions"
   [ -n "$cancel_key" ] && hints="$hints  |  $cancel_key: quit"
   printf '%s\n ' "$hints"
 }
 
-# The candidate directories. By default fzf walks the tree itself — no fd, no
-# find, no zoxide. TMUX_ATTENTION_DIR_ROOT is the knob that matters most (a
-# project root walks in well under a second), and TMUX_ATTENTION_DIR_COMMAND
-# replaces the source entirely (e.g. 'zoxide query --list' to offer only
-# directories you have actually visited), in which case root/skip/hidden no
-# longer apply — they configure a walk that is no longer happening.
-#
-# Returns fzf's own status once the list reached the user: 0 with the chosen
-# directory on stdout, 1 for no match, 130 for abort. 2 means the picker could
-# not run (fzf too old, or a source that failed with nothing chosen) and a
-# message has been shown.
-pick_dir() {
-  local cmd arg view_key cancel_key
-  cmd="$(attention_env TMUX_ATTENTION_DIR_COMMAND '')"
-  view_key="$(attention_env TMUX_ATTENTION_PICKER_VIEW_KEY shift-tab)"
-  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
-  local args=(--reverse --prompt 'directories > ' --header "$(dir_header)")
-  # the view key hands over to the session picker: emit a sentinel the main flow
-  # turns into `exec "$PICKER"` (see below), so the picker runs at the top level
-  # with the terminal — not nested in this $() with piped std streams.
-  [ -n "$view_key" ] && args+=(--bind "$view_key:become(printf %s $ATTENTION_TOGGLE)")
-  # cancel key: fzf's own abort returns to the terminal (esc does the same)
-  [ -n "$cancel_key" ] && args+=(--bind "$cancel_key:abort")
+# Typed rows: hidden target TAB kind TAB searchable name/path. Session IDs
+# are opaque targets, never inferred from a name or a directory. Recency is
+# the later of session input and any of its windows' output, as in the pane
+# picker. awk keeps one row per session without per-pane shell subprocesses.
+session_rows() {
+  local recent name id
+  tmux list-panes -a -F "#{session_id}${TAB}#{session_name}${TAB}#{session_activity}${TAB}#{window_activity}" 2>/dev/null |
+    awk -F '\t' 'BEGIN { OFS="\t" }
+      { names[$1]=$2; t=($3>$4 ? $3 : $4); if (t>times[$1]) times[$1]=t }
+      END { for (id in names) print times[id]+0,names[id],id }' |
+    LC_ALL=C sort -t "$TAB" -k1,1nr -k2,2 -k3,3 |
+    while IFS="$TAB" read -r recent name id; do
+      printf 's%s\t[session]\t%s\n' "$id" "$name"
+    done
+}
+
+# fzf is also the default directory enumerator. Filter mode needs --no-sort
+# to STREAM instead of buffering the entire walk; terminal stdin is required
+# to trigger walking even though stdout is piped. Clear all inherited fzf
+# producer settings so --sync/--tac/field transforms cannot corrupt the stream.
+# Custom commands still completely replace discovery and keep their ordering.
+directory_source() {
+  local cmd="$1" arg
   if [ -n "$cmd" ]; then
-    # fzf's verdict decides. A selection stands even when a streaming source
-    # exits non-zero (find after a permission-denied subtree, a tool that
-    # ignores SIGPIPE and is cut off by an early pick), and the source's
-    # stderr must not write over fzf's screen. Its exit status only serves to
-    # explain an empty or unmatched list: SIGPIPE (141) is normal when the
-    # user picks before the source has finished, and an abort stays quiet.
-    sh -c "$cmd" 2>/dev/null | fzf "${args[@]}"
-    local statuses=("${PIPESTATUS[@]}")
-    case "${statuses[1]}:${statuses[0]}" in
-      1:0 | 1:141) return 1 ;;
-      1:*)
-        msg "directory source exited ${statuses[0]}: $cmd"
-        return 2
-        ;;
-      *) return "${statuses[1]}" ;;
-    esac
+    sh -c "$cmd" 2>/dev/null
+  else
+    local args=(--filter= --no-sort)
+    while IFS= read -r arg; do args+=("$arg"); done < <(walker_args)
+    (unset FZF_DEFAULT_COMMAND FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE; fzf "${args[@]}")
   fi
-  if ! fzf_walks; then
+}
+
+list_destinations() {
+  local cmd="$1" path
+  session_rows
+  directory_source "$cmd" | while IFS= read -r path || [ -n "$path" ]; do
+    # Empty source lines are not directories. The path is last, so tabs in
+    # an actual path survive selection; no eval or shell unescaping is used.
+    [ -n "$path" ] && printf 'd\t[dir]\t%s\n' "$path"
+  done
+  local statuses=("${PIPESTATUS[@]}")
+  return "${statuses[0]}"
+}
+
+# fzf's verdict wins over source errors after a selection or abort. A failed
+# source explains an empty/unmatched list, but cannot block selecting a session
+# (or a directory it managed to emit). SIGPIPE is normal after an early pick.
+pick_destination() {
+  local cmd cancel_key
+  cmd="$(attention_env TMUX_ATTENTION_DIR_COMMAND '')"
+  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
+  if [ -z "$cmd" ] && ! fzf_walks; then
     msg 'directory picker needs fzf >= 0.48, or set TMUX_ATTENTION_DIR_COMMAND'
     return 2
   fi
-  while IFS= read -r arg; do args+=("$arg"); done < <(walker_args)
-  # No stdin, and no inherited default command: either one would bypass fzf's
-  # walker and ignore our directory root/hidden/skip settings.
-  (unset FZF_DEFAULT_COMMAND; fzf "${args[@]}")
+  local args=(--reverse --no-sort --no-tac --no-multi
+    --delimiter "$TAB" --with-nth '2..' --nth '2..'
+    --prompt 'sessions/directories > ' --header "$(dir_header)")
+  [ -n "$cancel_key" ] && args+=(--bind "$cancel_key:abort")
+  list_destinations "$cmd" | fzf "${args[@]}"
+  local statuses=("${PIPESTATUS[@]}")
+  case "${statuses[1]}:${statuses[0]}" in
+    1:0 | 1:141) return 1 ;;
+    1:*)
+      msg "directory source exited ${statuses[0]}: ${cmd:-fzf walker}"
+      return 2
+      ;;
+    *) return "${statuses[1]}" ;;
+  esac
 }
 
 # An existing session of that name wins: this is "take me to the session for
@@ -217,6 +226,16 @@ if [ "${1:-}" = '--header' ]; then # the picker's header hints (tests)
   exit 0
 fi
 
+if [ "${1:-}" = '--list-sessions' ]; then
+  session_rows
+  exit 0
+fi
+
+if [ "${1:-}" = '--list' ]; then
+  list_destinations "$(attention_env TMUX_ATTENTION_DIR_COMMAND '')"
+  exit "$?"
+fi
+
 # -- protects directory names that happen to match internal diagnostics.
 [ "${1:-}" = '--' ] && shift
 attention_require tmux || exit 1
@@ -226,27 +245,53 @@ if [ -z "${TMUX:-}" ] || [ "$#" -eq 0 ]; then
   attention_require_terminal || exit 1
 fi
 
-# Only explicit directory arguments replace the invoking pane. Interactive
-# picker selection (including popups) keeps the source pane, as before.
+# Directory navigation can replace the invoking pane, whether explicit or
+# selected in its shell. Popups may inherit TMUX_PANE but own a different tty:
+# only an interactive picker using that pane's actual terminal may consume it.
+# Missing/unverifiable terminal identity preserves the pane. Explicit arguments
+# retain their existing headless cleanup behavior. Session entries never use
+# this captured source: they return before go_to_dir below.
 source_pane=''
-if [ "$#" -gt 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   source_pane="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_id}' 2>/dev/null)" || source_pane=''
+  if [ "$#" -eq 0 ] && [ -n "$source_pane" ]; then
+    source_tty="$(tmux display-message -p -t "$source_pane" '#{pane_tty}' 2>/dev/null)" || source_tty=''
+    caller_tty="$(tty 2>/dev/null)" || caller_tty=''
+    if [ -z "$source_tty" ] || [ "$source_tty" != "$caller_tty" ]; then
+      source_pane=''
+    fi
+  fi
 fi
 
 dir="${1:-}"
 if [ "$#" -eq 0 ]; then
   attention_require fzf || exit 1
-  dir="$(pick_dir)"
+  if tmux list-sessions >/dev/null 2>&1; then
+    ensure_server_hooks || exit 1
+  fi
+  selection="$(pick_destination)"
   rc=$?
   case "$rc" in
     0) ;;
     1 | 130) exit 0 ;; # no match or user abort, as in picker.sh
     *) exit "$rc" ;;
   esac
-  # Top-level exec keeps attach connected to the terminal, even on a cold
-  # server. --sessions deliberately allows an empty sessions view.
-  [ "$dir" = "$ATTENTION_TOGGLE" ] && exec "$PICKER" --sessions
-  [ -n "$dir" ] || exit 0
+  [ -n "$selection" ] || exit 0
+  target="${selection%%"$TAB"*}"
+  case "$target" in
+    s\$*)
+      id="${target#s}"
+      case "${id#\$}" in '' | *[!0-9]*) exit 1 ;; esac
+      # A vanished session is an error, never a request to create a directory.
+      attention_go_to "$id"
+      exit "$?"
+      ;;
+    d)
+      dir="${selection#*"$TAB"}"
+      dir="${dir#*"$TAB"}"
+      ;;
+    *) msg 'invalid picker selection'; exit 1 ;;
+  esac
 fi
 
 go_to_dir "$dir" "$source_pane"

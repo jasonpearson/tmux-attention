@@ -37,6 +37,52 @@ wait_screen() {
   done
   fail "screen did not show: $1"
 }
+wait_screen_absent() {
+  local n text
+  for ((n=0; n<100; n++)); do
+    text="$(D capture-pane -p -t "$PANE" 2>/dev/null || true)"
+    case "$text" in *"$1"*) sleep 0.05 ;; *) return 0 ;; esac
+  done
+  fail "screen still showed: $1"
+}
+# Fzf may paint the query before its asynchronous matching finishes. Never
+# accept or invoke a row action until the corresponding count is rendered.
+wait_matches() {
+  local n text
+  for ((n=0; n<100; n++)); do
+    text="$(D capture-pane -p -t "$PANE" 2>/dev/null || true)"
+    # A tmux popup adds its border before fzf's count line.
+    if printf '%s\n' "$text" | grep -Eq "^[[:space:]│]*$1/[0-9]+"; then return 0; fi
+    sleep 0.05
+  done
+  fail "picker did not settle on $1 matches"
+}
+# Assert visible row order, not just the selected item. Use unique row tokens
+# that do not occur in the query/header; retries allow fzf's next render.
+wait_screen_order() {
+  local n text token line previous ordered
+  for ((n=0; n<100; n++)); do
+    text="$(D capture-pane -p -t "$PANE" 2>/dev/null || true)"
+    previous=0 ordered=1
+    for token in "$@"; do
+      line="$(printf '%s\n' "$text" | awk -v token="$token" 'index($0, token) { print NR; exit }')"
+      if [ -z "$line" ] || [ "$line" -le "$previous" ]; then ordered=0; break; fi
+      previous="$line"
+    done
+    [ "$ordered" -eq 0 ] || return 0
+    sleep 0.05
+  done
+  fail "rows were not in order: $*"
+}
+wait_inside_screen() {
+  local n text
+  for ((n=0; n<100; n++)); do
+    text="$(T capture-pane -p -t "$TARGET_PANE" 2>/dev/null || true)"
+    case "$text" in *"$1"*) return 0 ;; esac
+    sleep 0.05
+  done
+  fail "inside command did not render directly in its pane (automatic popup?): $1"
+}
 wait_result() {
   local n result="${2:-$WORK/result}"
   for ((n=0; n<100; n++)); do
@@ -75,11 +121,11 @@ wait_pane_closed() {
     pane_exists "$1" || return 0
     sleep 0.05
   done
-  fail "direct directory navigation did not close invoking pane $1"
+  fail "pane $1 was not closed"
 }
 # Run through the target pane's real shell, not a headless synthetic $TMUX.
-# Returning commands leave a marker; successful cross-session direct navigation
-# destroys this shell, so those cases wait for its pane to disappear instead.
+# Returning commands leave a marker; successful cross-session directory
+# navigation destroys this shell, so those cases wait for its pane to disappear.
 invoke_inside() {
   rm -f "$WORK/inside-result"
   {
@@ -126,6 +172,16 @@ cp -R "$ROOT/bin" "$ROOT/scripts" "$INSTALL/"
 cp "$ROOT/VERSION" "$INSTALL/"
 BIN="$INSTALL/bin/tmux-attention"
 
+# Both interactive entrypoints require a terminal and must not bootstrap a
+# server just to reject redirected input/output.
+for command in combined panes; do
+  args=("$BIN")
+  [ "$command" != panes ] || args+=(panes)
+  if PATH="$WORK/bin:$PATH" "${args[@]}" </dev/null >"$WORK/no-tty" 2>&1; then
+    fail "non-TTY $command picker succeeded"
+  fi
+  if T list-sessions >/dev/null 2>&1; then fail "non-TTY $command picker started a server"; fi
+done
 # Explicit directories without a terminal fail BEFORE creating any session.
 if PATH="$WORK/bin:$PATH" "$BIN" "$WORK/projects/sample" </dev/null >"$WORK/no-tty" 2>&1; then
   fail 'non-TTY directory invocation succeeded'
@@ -156,6 +212,10 @@ launch() {
   PANE="$(D new-window -d -P -F '#{pane_id}' "bash $(printf %q "$WORK/launch.sh")")"
 }
 
+# Focused feedback loop: bash tests/terminal-tests.sh --cleanup-only
+source "$ROOT/tests/picker-cleanup-tests.sh"
+[ "${1:-}" != --cleanup-only ] || exit 0
+
 # Even a command that exits immediately must leave its diagnostic inspectable.
 launch "$WORK/missing-directory"
 wait_result 1
@@ -165,10 +225,24 @@ case "$(D capture-pane -p -S - -t "$PANE")" in
 esac
 
 launch
-wait_screen 'directories >'
+wait_screen 'sessions/directories >'
 D send-keys -t "$PANE" Escape
 wait_result 0
 if T list-sessions >/dev/null 2>&1; then fail 'cancel started a server'; fi
+
+# An empty cold launcher and an empty pane picker both return successfully
+# without hidden bootstrap sessions. Enter with no selection is not an error.
+TMUX_ATTENTION_DIR_COMMAND='exit 0'
+launch
+wait_screen 'sessions/directories >'
+D send-keys -t "$PANE" Enter
+wait_result 0
+launch panes
+wait_screen 'panes >'
+D send-keys -t "$PANE" Enter
+wait_result 0
+if T list-sessions >/dev/null 2>&1; then fail 'empty picker started a server'; fi
+TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/sample'"
 
 # A conflicting fzf default command must not bypass our built-in directory
 # walker. Explicit empty skip must also override fzf's own default exclusions.
@@ -189,16 +263,11 @@ if [ "$major" -gt 0 ] || [ "$minor" -ge 48 ]; then
   FZF_DEFAULT_COMMAND=''
 fi
 
-# On a cold server every view is reachable, with no hidden bootstrap session.
+# Cold interactive directory selection creates and attaches at the top level,
+# with no hidden bootstrap session or nested fzf stdout-capture terminal.
 launch
-wait_screen 'directories >'
-D send-keys -t "$PANE" BTab
-wait_screen 'view: sessions'
-D send-keys -t "$PANE" BTab
-wait_screen 'view: panes'
-D send-keys -t "$PANE" BTab
-wait_screen 'directories >'
-if T list-sessions >/dev/null 2>&1; then fail 'cycling views started a server'; fi
+wait_screen 'sessions/directories >'
+if T list-sessions >/dev/null 2>&1; then fail 'browsing started a server'; fi
 wait_screen "$WORK/projects/sample"
 D send-keys -t "$PANE" Enter
 wait_attached
@@ -262,92 +331,304 @@ wait_result 0
 # A directory source that exits non-zero must not discard a selection fzf
 # accepted: find hitting a permission-denied subtree exits 1, and a tool that
 # ignores SIGPIPE exits non-zero when an early pick closes its stdout. The
-# source's own stderr must also stay off fzf's screen. Sessions exist by now,
-# so the navigator opens on sessions; cycle to the directory view.
-export TMUX_ATTENTION_DIR_COMMAND="{ printf '%s\\n' '$WORK/projects/sample'; printf 'noise\\n' >&2; } ; exit 1"
+# source's own stderr must also stay off fzf's screen. Sessions and directory
+# rows coexist, so a full-path query selects the directory rather than sample.
+export TMUX_ATTENTION_DIR_COMMAND="{ printf '%s\\n' '$WORK/projects/sample'; printf 'source-stderr-noise\\n' >&2; } ; exit 1"
 launch
-wait_screen 'view: sessions'
-D send-keys -t "$PANE" BTab
-wait_screen 'view: panes'
-D send-keys -t "$PANE" BTab
-wait_screen 'directories >'
+wait_screen 'sessions/directories >'
 wait_screen "$WORK/projects/sample"
+wait_screen_absent source-stderr-noise
+D send-keys -t "$PANE" -l "$WORK/projects/sample"
+wait_screen "sessions/directories > $WORK/projects/sample"
+wait_matches 1
 D send-keys -t "$PANE" Enter
 wait_attached
 [ "$(T list-clients -F '#{session_name}')" = sample ] || fail 'a non-zero directory source discarded the selection'
 detach
 wait_result 0
 
-# An empty source (or no match) exits 0 on Enter, like the sessions view —
-# not a silent failure status inside the popup.
+# An empty directory source still exposes existing sessions; unmatched Enter
+# returns 0 instead of silently failing inside a popup.
 export TMUX_ATTENTION_DIR_COMMAND='exit 0'
 launch
-wait_screen 'view: sessions'
-D send-keys -t "$PANE" BTab
-wait_screen 'view: panes'
-D send-keys -t "$PANE" BTab
-wait_screen 'directories >'
+wait_screen 'sessions/directories >'
+wait_screen '[session]'
+wait_screen sample
+D send-keys -t "$PANE" -l no-such-picker-destination
+wait_screen 'sessions/directories > no-such-picker-destination'
+wait_matches 0
 D send-keys -t "$PANE" Enter
 wait_result 0
 export TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/sample'"
 
-# Starting with sessions, abort and a full round trip both keep the real TTY.
+# Manually created, unrelated sessions are first-class destinations. Recent
+# sessions beat urgent old ones; equal timestamps use name, not creation ID.
+# Sleeps are necessary because tmux timestamps have one-second precision.
+T new-session -d -s MIXNEEDLE-old -c / 'sleep 300'
+T set -p -t '=MIXNEEDLE-old:' @attention_state failed
+sleep 2
+for ((attempt=0; attempt<5; attempt++)); do
+  T new-session -d -s zzz-MIXNEEDLE-sess -c / 'sleep 300'
+  T new-session -d -s aaa-MIXNEEDLE-sess -c / 'sleep 300'
+  older="$(T display-message -p -t '=zzz-MIXNEEDLE-sess:' '#{session_activity}:#{window_activity}')"
+  newer="$(T display-message -p -t '=aaa-MIXNEEDLE-sess:' '#{session_activity}:#{window_activity}')"
+  [ "$older" != "$newer" ] || break
+  T kill-session -t '=zzz-MIXNEEDLE-sess'
+  T kill-session -t '=aaa-MIXNEEDLE-sess'
+done
+[ "$attempt" -lt 5 ] || fail 'could not arrange equal session timestamps'
+mkdir -p "$WORK/projects/slow-dir-MIXNEEDLE" "$WORK/projects/MIXNEEDLE-dir"
+export TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/slow-dir-MIXNEEDLE' '$WORK/projects/MIXNEEDLE-dir' '$WORK/projects/sample' '$WORK/projects/sample'"
 launch
-wait_screen 'view: sessions'
-wait_screen sample
-D send-keys -t "$PANE" C-s
-wait_screen 'sort: name'
-D send-keys -t "$PANE" C-s
-wait_screen 'sort: attention'
+wait_screen 'sessions/directories >'
+wait_screen_order aaa-MIXNEEDLE-sess zzz-MIXNEEDLE-sess MIXNEEDLE-old \
+  slow-dir-MIXNEEDLE MIXNEEDLE-dir
+wait_screen '[dir]'
+# Neither an existing session nor repeated source output deduplicates a dir.
+for ((n=0; n<100; n++)); do
+  screen="$(D capture-pane -p -t "$PANE")"
+  [ "$(printf '%s\n' "$screen" | grep -Fc "$WORK/projects/sample")" -ne 2 ] || break
+  sleep 0.05
+done
+[ "$n" -lt 100 ] || fail 'combined picker deduplicated directory rows'
+# Fzf's normal relevance scoring prefers the old prefix match (and the
+# second directory). --no-sort must preserve BOTH groups while filtering.
+D send-keys -t "$PANE" -l MIXNEEDLE
+wait_screen 'sessions/directories > MIXNEEDLE'
+wait_matches 5
+wait_screen_order aaa-MIXNEEDLE-sess zzz-MIXNEEDLE-sess MIXNEEDLE-old \
+  slow-dir-MIXNEEDLE MIXNEEDLE-dir
+# K is ordinary query input here, never a session/directory kill action.
+D send-keys -t "$PANE" C-u K
+wait_screen 'sessions/directories > K'
+T has-session -t '=aaa-MIXNEEDLE-sess' || fail 'launcher K killed a session'
 D send-keys -t "$PANE" C-c
 wait_result 0
+
+# Selecting a manual session must attach by its typed ID, not reinterpret the
+# displayed name as a directory (none of these names exists under DIR_ROOT).
 launch
-wait_screen 'view: sessions'
-D send-keys -t "$PANE" BTab
-wait_screen 'view: panes'
-D send-keys -t "$PANE" BTab
-wait_screen 'directories >'
-D send-keys -t "$PANE" BTab
-wait_screen 'view: sessions'
-wait_screen sample
+wait_screen 'sessions/directories >'
+D send-keys -t "$PANE" -l zzz-MIXNEEDLE-sess
+wait_screen 'sessions/directories > zzz-MIXNEEDLE-sess'
+wait_matches 1
 D send-keys -t "$PANE" Enter
 wait_attached
-[ "$(T list-clients -F '#{client_name}' | wc -l | tr -d ' ')" -eq 1 ] || fail 'round trip nested clients'
+wait_client_session zzz-MIXNEEDLE-sess
+detach
+wait_result 0
+for session in MIXNEEDLE-old zzz-MIXNEEDLE-sess aaa-MIXNEEDLE-sess; do T kill-session -t "=$session"; done
+export TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/sample'"
+
+# With sessions already present, a different directory must still create and
+# attach without any intervening mode switch or nested terminal capture.
+mkdir -p "$WORK/projects/interactive-fresh"
+export TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/interactive-fresh'"
+launch
+wait_screen 'sessions/directories >'
+wait_screen "$WORK/projects/interactive-fresh"
+D send-keys -t "$PANE" -l interactive-fresh
+wait_screen 'sessions/directories > interactive-fresh'
+wait_matches 1
+D send-keys -t "$PANE" Enter
+wait_attached
+wait_client_session interactive-fresh
+fresh_pane="$(T list-panes -t '=interactive-fresh:' -F '#{pane_id}')"
+[ "$(T display-message -p -t "$fresh_pane" '#{pane_current_path}')" = "$WORK/projects/interactive-fresh" ] ||
+  fail 'interactive creation used the wrong directory'
+detach
+wait_result 0
+T kill-session -t '=interactive-fresh'
+export TMUX_ATTENTION_DIR_COMMAND="printf '%s\\n' '$WORK/projects/sample'"
+
+# Startup always combines both kinds, even when sessions already exist.
+launch
+wait_screen 'sessions/directories >'
+wait_screen '[session]'
+wait_screen '[dir]'
+D send-keys -t "$PANE" Enter
+wait_attached
+wait_client_session sample
+[ "$(T list-clients -F '#{client_name}' | wc -l | tr -d ' ')" -eq 1 ] || fail 'session selection nested clients'
 
 # The target's shell is really inside tmux: selection must SWITCH, not attach.
 T new-session -d -s another
 TARGET_PANE="$(T list-panes -t '=sample' -F '#{pane_id}')"
 invoke_inside
-wait_screen 'view: sessions'
+wait_screen 'sessions/directories >'
+wait_inside_screen 'sessions/directories >'
 wait_screen another
 T send-keys -t "$TARGET_PANE" -l another
 wait_screen '> another'
+wait_matches 1
 T send-keys -t "$TARGET_PANE" Enter
 wait_client_session another
 wait_result 0 "$WORK/inside-result"
 pane_exists "$TARGET_PANE" || fail 'bare session picker closed its invoking pane'
 [ "$(T list-clients -F '#{client_name}' | wc -l | tr -d ' ')" -eq 1 ] || fail 'inside selection attached another client'
 
-# Choosing a directory through the bare navigator is also non-destructive.
-# Waiting for its shell marker distinguishes a finished switch from a render
-# that happened before a mistakenly scheduled pane close.
-TARGET_PANE="$(T list-panes -t '=another' -F '#{pane_id}')"
+# Choosing a directory from a pane shell closes that pane after switching.
+# Retain another's original window for the later native-format assertions.
+TARGET_PANE="$(T new-window -t '=another:' -P -F '#{pane_id}')"
 invoke_inside
-wait_screen 'view: sessions'
-T send-keys -t "$TARGET_PANE" BTab
-wait_screen 'view: panes'
-T send-keys -t "$TARGET_PANE" BTab
-wait_screen 'directories >'
+wait_screen 'sessions/directories >'
+wait_inside_screen 'sessions/directories >'
 wait_screen "$WORK/projects/sample"
+T send-keys -t "$TARGET_PANE" -l "$WORK/projects/sample"
+wait_screen "sessions/directories > $WORK/projects/sample"
+wait_matches 1
 T send-keys -t "$TARGET_PANE" Enter
 wait_client_session sample
-wait_result 0 "$WORK/inside-result"
-pane_exists "$TARGET_PANE" || fail 'bare directory picker closed its invoking pane'
+wait_pane_closed "$TARGET_PANE"
+T has-session -t '=another' || fail 'bare directory picker closed unrelated source panes'
 [ "$(T list-clients -F '#{client_name}' | wc -l | tr -d ' ')" -eq 1 ] || fail 'directory picker attached another client'
 detach
 wait_result 0
 
-# Direct relative directory entry does not depend on fzf or the initial view.
+# The explicit pane command lists every pane in fixed attention order,
+# including during searches. Prefix relevance must not pull untracked ahead.
+# Distinguish fixtures through their paths, including split panes whose pane
+# column shows only an index. Titles are deliberately absent from the table.
+fixture_panes=()
+fixture_paths=(zz-PANEPROBE-failed yy-PANEPROBE-blocked xx-PANEPROBE-done
+  ww-PANEPROBE-unknown vv-PANEPROBE-working uu-PANEPROBE-idle PANEPROBE-untracked)
+fixture_states=(failed blocked done unknown working idle untracked)
+for ((i=0; i<${#fixture_states[@]}; i++)); do
+  fixture_path="$WORK/panes/${fixture_paths[$i]}"
+  mkdir -p "$fixture_path"
+  if [ "$i" -eq 0 ]; then
+    fixture="$(T new-session -d -s pane-fixtures -n check -c "$fixture_path" -P -F '#{pane_id}' 'sleep 300')"
+  else
+    fixture="$(T new-window -d -t '=pane-fixtures:' -n "check$i" -c "$fixture_path" -P -F '#{pane_id}' 'sleep 300')"
+  fi
+  fixture_panes+=("$fixture")
+  T select-pane -t "$fixture" -T TITLEONLYPROBE
+  if [ "${fixture_states[$i]}" != untracked ]; then
+    T set -p -t "$fixture" @attention_state "${fixture_states[$i]}"
+    T set -p -t "$fixture" @attention_since "$(date +%s)"
+  fi
+done
+# A sibling catches an implementation that kills the selected window/session.
+KILL_PANE="${fixture_panes[1]}"
+KILL_WINDOW="$(T display-message -p -t "$KILL_PANE" '#{window_id}')"
+KILL_SIBLING="$(T split-window -d -t "$KILL_PANE" -c / -P -F '#{pane_id}' 'sleep 300')"
+T select-pane -t "$KILL_SIBLING" -T keep-pane-sibling
+
+launch "$WORK/projects/sample"
+D resize-window -t "$PANE" -x 240
+wait_attached
+TARGET_PANE="$(T list-panes -t '=sample:' -F '#{pane_id}')"
+invoke_inside panes
+wait_screen 'panes >'
+wait_inside_screen 'panes >'
+wait_screen_order "${fixture_paths[@]}"
+wait_screen_absent TITLEONLYPROBE
+T send-keys -t "$TARGET_PANE" -l TITLEONLYPROBE
+wait_matches 0 # removed titles are not secretly searchable
+T send-keys -t "$TARGET_PANE" C-u
+T send-keys -t "$TARGET_PANE" -l PANEPROBE
+wait_screen 'panes > PANEPROBE'
+wait_matches 7
+wait_screen_order "${fixture_paths[@]}"
+T send-keys -t "$TARGET_PANE" Enter
+wait_client_session pane-fixtures
+wait_result 0 "$WORK/inside-result"
+pane_exists "$TARGET_PANE" || fail 'pane picker closed its invoking pane'
+[ "$(T display-message -p -t '=pane-fixtures:' '#{pane_id}')" = "${fixture_panes[0]}" ] ||
+  fail 'pane picker did not focus the highest-priority matching pane'
+[ "$(T list-clients -F '#{client_name}' | wc -l | tr -d ' ')" -eq 1 ] || fail 'pane picker nested clients'
+detach
+wait_result 0
+
+# execute must hand K's confirmation the real terminal. Decline keeps the
+# pane; accept kills only it and reloads, leaving its sibling/window/session.
+launch panes
+D resize-window -t "$PANE" -x 240
+wait_screen 'panes >'
+D send-keys -t "$PANE" -l PANEPROBE-blocked
+wait_screen 'panes > PANEPROBE-blocked'
+wait_matches 1
+D send-keys -t "$PANE" K
+wait_screen 'kill pane '
+wait_screen '[y/N]'
+D send-keys -t "$PANE" n
+wait_screen 'panes > PANEPROBE-blocked'
+wait_matches 1
+pane_exists "$KILL_PANE" || fail 'declining K confirmation killed a pane'
+D send-keys -t "$PANE" K
+wait_screen '[y/N]'
+D send-keys -t "$PANE" y
+wait_pane_closed "$KILL_PANE"
+wait_screen 'panes > PANEPROBE-blocked'
+wait_matches 0
+pane_exists "$KILL_SIBLING" || fail 'K killed the selected pane sibling'
+[ "$(T display-message -p -t "$KILL_SIBLING" '#{window_id}')" = "$KILL_WINDOW" ] ||
+  fail 'K replaced the selected window'
+for fixture in "${fixture_panes[@]}"; do
+  [ "$fixture" = "$KILL_PANE" ] || pane_exists "$fixture" || fail 'K killed an unrelated pane'
+done
+D send-keys -t "$PANE" Escape
+wait_result 0
+
+# Pane selection outside tmux attaches rather than silently selecting a target
+# in a detached server; its chosen window and pane must both become active.
+launch panes
+D resize-window -t "$PANE" -x 240
+wait_screen 'panes >'
+D send-keys -t "$PANE" -l PANEPROBE-working
+wait_screen 'panes > PANEPROBE-working'
+wait_matches 1
+D send-keys -t "$PANE" Enter
+wait_attached
+wait_client_session pane-fixtures
+[ "$(T display-message -p -t '=pane-fixtures:' '#{pane_id}')" = "${fixture_panes[4]}" ] ||
+  fail 'outside pane selection attached the wrong pane'
+detach
+wait_result 0
+T kill-session -t '=pane-fixtures'
+
+# A linked pane has several valid session contexts. Preserve the one shown
+# in its row, not whichever session a later bare pane-ID lookup happens to
+# choose. Common window activity makes the two contexts tie; name picks a-.
+LINKED_PANE="$(T new-session -d -s a-linked-context -c / -P -F '#{pane_id}' 'sleep 300')"
+LINKED_WINDOW="$(T display-message -p -t "$LINKED_PANE" '#{window_id}')"
+T new-session -d -s z-linked-context -c / 'sleep 300'
+T link-window -s "$LINKED_WINDOW" -t '=z-linked-context:' -d
+sleep 1.1
+T send-keys -t "$LINKED_PANE" -l common-window-activity
+T rename-window -t "$LINKED_WINDOW" CTXPROBE
+sleep 0.2
+for context_mode in outside inside; do
+  if [ "$context_mode" = outside ]; then
+    launch panes
+  else
+    launch "$WORK/projects/sample"
+    wait_attached
+    TARGET_PANE="$(T list-panes -t '=sample:' -F '#{pane_id}')"
+    invoke_inside panes
+  fi
+  D resize-window -t "$PANE" -x 240
+  wait_screen 'panes >'
+  D send-keys -t "$PANE" -l CTXPROBE
+  wait_screen 'panes > CTXPROBE'
+  wait_matches 1
+  wait_screen 'a-linked-context'
+  D send-keys -t "$PANE" Enter
+  wait_attached
+  wait_client_session a-linked-context
+  [ "$(T display-message -p -t '=a-linked-context:' '#{pane_id}')" = "$LINKED_PANE" ] ||
+    fail 'linked pane selection lost the displayed window/pane context'
+  if [ "$context_mode" = inside ]; then
+    wait_result 0 "$WORK/inside-result"
+    pane_exists "$TARGET_PANE" || fail 'linked pane selection closed its origin'
+  fi
+  detach
+  wait_result 0
+done
+T kill-session -t '=z-linked-context'
+T kill-session -t '=a-linked-context'
+
+# Direct relative directory entry does not depend on fzf.
 TARGET_PANE="$(T list-panes -t '=sample' -F '#{pane_id}')"
 launch .
 wait_attached
@@ -399,15 +680,26 @@ T set -g window-status-current-format "$window_current_before"
 T set -g status-interval "$status_interval_before"
 
 # These are explicit USER bindings, not an implicit UI installed by the tool.
-# Simulate a server started before mise activation. The env argv supplies the
-# activated tool PATH just as a user-managed shim would; preferences are also
-# explicit user configuration rather than environment captured by init.
+# Simulate a server started before mise activation. The small exec fixture
+# models activation without making mise a test dependency; actual offline mise
+# execution is covered by mise-tests.sh. Its quoted install path and direct
+# argv also test a default-shell that does not understand POSIX setup syntax.
+MISE_FIXTURE="$INSTALL/mise"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '[ "$1" = exec ] && [ "$2" = -- ] && [ "$3" = tmux-attention ] || exit 90\nshift 3\n'
+  printf 'printf "entry:%%s\\n" "${1:-combined}" >> %q\n' "$WORK/mise-calls"
+  printf 'export PATH=%q\nexec %q "$@"\n' "$WORK/bin:$PATH" "$BIN"
+} > "$MISE_FIXTURE"
+chmod +x "$MISE_FIXTURE"
 T set-environment -g PATH /usr/bin:/bin
-T set-environment -g TMUX_ATTENTION_PICKER_VIEW_KEY ctrl-y
+T set-environment -g TMUX_ATTENTION_DIR_COMMAND 'printf "__wrong_popup_source__\\n"'
 T bind-key a display-popup -E -w 85% -h 80% -d '#{pane_current_path}' \
-  /usr/bin/env "PATH=$WORK/bin:$PATH" TMUX_ATTENTION_PICKER_VIEW_KEY=shift-tab \
-  "TMUX_ATTENTION_DIR_ROOT=$TMUX_ATTENTION_DIR_ROOT" \
-  "TMUX_ATTENTION_DIR_COMMAND=$TMUX_ATTENTION_DIR_COMMAND" "$BIN"
+  /usr/bin/env "TMUX_ATTENTION_DIR_ROOT=$TMUX_ATTENTION_DIR_ROOT" \
+  "TMUX_ATTENTION_DIR_COMMAND=$TMUX_ATTENTION_DIR_COMMAND" "$MISE_FIXTURE" exec -- tmux-attention panes
+T bind-key A display-popup -E -w 85% -h 80% -d '#{pane_current_path}' \
+  /usr/bin/env "TMUX_ATTENTION_DIR_ROOT=$TMUX_ATTENTION_DIR_ROOT" \
+  "TMUX_ATTENTION_DIR_COMMAND=$TMUX_ATTENTION_DIR_COMMAND" "$MISE_FIXTURE" exec -- tmux-attention
 # run-shell takes one shell command; %q safely quotes the installed path and
 # PATH. Keep #{pane_id} intact for tmux (rather than %q's escaped braces).
 # env needs no shell-specific export/unset setup syntax.
@@ -419,24 +711,28 @@ popup_shells=(/bin/sh)
 if command -v tcsh >/dev/null 2>&1; then popup_shells+=("$(command -v tcsh)"); fi
 for popup_shell in "${popup_shells[@]}"; do
   T set-option -g default-shell "$popup_shell"
-  D send-keys -t "$PANE" C-b a
-  wait_screen 'view: sessions'
-  wait_screen 'shift-tab: panes' # explicit preference overrides stale server env
-  D send-keys -t "$PANE" BTab
-  wait_screen 'view: panes'
-  D send-keys -t "$PANE" BTab
-  wait_screen 'directories >'
-  wait_screen "$WORK/projects/sample"
-  D send-keys -t "$PANE" C-c
-  for ((n=0; n<100; n++)); do
-    screen="$(D capture-pane -p -t "$PANE")"
-    case "$screen" in *'directories >'*) sleep 0.05 ;; *) break ;; esac
+  for popup_key in a A; do
+    D send-keys -t "$PANE" C-b "$popup_key"
+    if [ "$popup_key" = a ]; then
+      popup_prompt='panes >'
+    else
+      popup_prompt='sessions/directories >'
+    fi
+    wait_screen "$popup_prompt"
+    if [ "$popup_key" = A ]; then
+      wait_screen "$WORK/projects/sample"
+      wait_screen_absent __wrong_popup_source__
+    fi
+    D send-keys -t "$PANE" C-c
+    wait_screen_absent "$popup_prompt"
+    # The popup can disappear one render before tmux releases its input grab.
+    sleep 0.5
   done
-  # The popup can disappear one render before tmux releases its input grab.
-  sleep 0.5
 done
 T set-option -g default-shell /bin/sh
-T set-environment -gu TMUX_ATTENTION_PICKER_VIEW_KEY
+T set-environment -gu TMUX_ATTENTION_DIR_COMMAND
+[ "$(grep -c '^entry:panes$' "$WORK/mise-calls")" -eq "${#popup_shells[@]}" ] || fail 'a popup did not use mise exec panes'
+[ "$(grep -c '^entry:combined$' "$WORK/mise-calls")" -eq "${#popup_shells[@]}" ] || fail 'A popup did not use mise exec launcher'
 D send-keys -t "$PANE" C-b h
 for ((n=0; n<100; n++)); do
   [ "$(T show-options -pqv -t "$TARGET_PANE" @attention_state)" != done ] || break
@@ -515,4 +811,4 @@ pane_exists "$EXISTING_PANE" || fail 'last-pane navigation closed its destinatio
 [ ! -f "$WORK/result" ] || fail 'outer attach returned before explicit detach'
 detach
 wait_result 0
-printf 'PASS: real-terminal native setup/staleness, cancellation, view cycle, attach, switch, direct pane closure, dot, and user bindings\n'
+printf 'PASS: real-terminal native setup/staleness, combined ordering/search, pane ordering/kill, attach/switch, direct pane closure, and both user popups\n'

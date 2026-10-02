@@ -3,14 +3,6 @@
 
 TAB="$(printf '\t')"
 
-# Sentinel a picker's view key emits (via fzf `become`) so the shell that
-# captured the picker's stdout hands over to the other picker with `exec`. Using
-# exec (not a nested `become` inside the $() capture) keeps each picker at the
-# top level with the terminal on its std streams — so attach works from a bare
-# shell, and fzf's own abort (esc / ctrl-c) returns straight to the terminal
-# (see picker.sh / new-session.sh).
-ATTENTION_TOGGLE='__tmux_attention_toggle__'
-
 # Echo a global option's value, or the default when the option is unset.
 # An option explicitly set to "" is honored as-is (it disables an icon or a
 # key binding), which is why this checks set-ness rather than value emptiness.

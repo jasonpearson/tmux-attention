@@ -6,7 +6,7 @@ assert_contains 'version identifies the installed release' \
   "$("$BIN" --version)" "tmux-attention $(<"$DIR/VERSION")"
 assert_eq 'help does not advertise an init command' \
   "$("$BIN" --help | grep -Ec 'tmux-attention init|^  init[[:space:]]')" 0
-for args in 'run' 'init extra' '--help extra' 'help extra' '--version extra' 'working one two' '--' '-- one two' '--bogus'; do
+for args in 'run' 'init extra' '--help extra' 'help extra' '--version extra' 'working one two' '--' '-- one two' '--bogus' 'panes extra' 'panes --'; do
   # Intentional word splitting: every case consists of simple fixed words.
   "$BIN" $args >/dev/null 2>&1
   assert_eq "invalid arguments fail: $args" "$?" 1
@@ -23,6 +23,13 @@ inside "$B1" "$BIN" idle
 assert_contains 'help prints usage' "$(inside "$B1" "$BIN" help)" 'usage: tmux-attention'
 inside "$B1" "$BIN" help >/dev/null
 assert_eq 'help exits 0' "$?" 0
+assert_contains 'help advertises the pane command' "$("$BIN" help)" 'tmux-attention panes'
+assert_eq 'help no longer advertises view cycling' \
+  "$("$BIN" help | grep -c 'Shift-tab')" 0
+"$BIN" panes >/dev/null 2>&1
+assert_eq 'pane picker without a terminal fails' "$?" 1
+assert_contains 'pane picker without a terminal prints usage' \
+  "$("$BIN" panes 2>&1 >/dev/null)" 'usage: tmux-attention'
 
 # --version reads the file even when it has no trailing newline (a packager or
 # editor may strip it); read returns 1 at EOF but the version was still filled.
@@ -64,24 +71,25 @@ T set-option -g @attention_formats_version "$fv_before"
 T set -pu -t "$B1" @attention_state
 
 # Directory disambiguation at the public boundary. init and pick are ordinary
-# names needing no escape; run and help are reserved words, so a directory of
-# either name is reached through -- (as is --header, which starts with a dash).
+# names; run, help and panes are reserved. -- or ./ protects these directories.
 mkdir -p "$TEST_TMP/args/run" "$TEST_TMP/args/--header" "$TEST_TMP/args/pick" \
-  "$TEST_TMP/args/init" "$TEST_TMP/args/help"
+  "$TEST_TMP/args/init" "$TEST_TMP/args/help" "$TEST_TMP/args/panes"
 (
   cd "$TEST_TMP/args" || exit 1
   from_directory_pane "$BIN" -- run
   from_directory_pane "$BIN" -- --header
   from_directory_pane "$BIN" -- help
+  from_directory_pane "$BIN" -- panes
+  from_directory_pane "$BIN" ./panes
   from_directory_pane "$BIN" pick
   from_directory_pane "$BIN" init
 )
 T switch-client -c "$CLIENT" -t beta
-for name in run --header help pick init; do
+for name in run --header help panes pick init; do
   assert_eq "literal directory creates session: $name" \
     "$(T has-session -t "=$name" 2>/dev/null && echo yes)" yes
   assert_eq "literal directory roots session correctly: $name" \
-    "$(T list-panes -t "=$name" -F '#{pane_current_path}' 2>/dev/null)" "$TEST_TMP/args/$name"
+    "$(T list-panes -t "=$name:" -F '#{pane_current_path}' 2>/dev/null)" "$TEST_TMP/args/$name"
   T kill-session -t "=$name"
 done
 

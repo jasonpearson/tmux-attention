@@ -80,27 +80,32 @@ is not required to install or use the CLI. Choose one installation to maintain.
 ```sh
 alias t='tmux-attention'
 
-t                     # navigate sessions, panes and directories
-t .                   # create/reuse the current directory's session
+t                    # choose an existing session or a project directory
+t panes              # choose a pane by attention priority
+t .                  # create/reuse the current directory's session
 t ~/code/api          # create/reuse the api session
 t run -- make test    # working -> done/failed, preserving the exit code
 ```
 
-The navigator opens **sessions when any exist, directories otherwise**.
-**Shift-tab** always cycles **sessions → panes → directories → sessions**.
-**Esc** or **ctrl-c** quits from any view. Browsing and cancelling on a cold
-start does not create a tmux server or a hidden bootstrap session.
+Bare invocation always opens the **combined session/directory picker**:
+existing sessions first, then directories. Use **`tmux-attention panes`** for
+the separate flat pane picker. **Esc** or **ctrl-c** quits either picker.
+Browsing and cancelling on a cold start does not create a tmux server or a
+hidden bootstrap session. The CLI runs in your terminal; it never creates a
+popup itself.
 
 Directory arguments are normalized first (`.`, `..`, trailing slashes, and
 symlinks work). The session is named after the resolved directory's leaf;
 `.` and `:` become `_`, and `/` becomes `root`. An existing session of that
 exact name wins, even if it was created for another directory with the same
-leaf. Use `./run` or `-- run` for a directory whose name is a command.
+leaf. Command names are reserved: use `./panes` or `-- panes` for a directory
+named `panes` (likewise `./run` or `-- run`).
 
-Inside tmux, an explicit directory argument **closes the invoking pane after
-switching** to a different session. If it was the last pane, its old session
-closes too. Failed navigation, navigation within the same session, and picker
-selections leave the invoking pane open.
+Inside tmux, a directory argument or a directory selected from a pane shell
+**closes the invoking pane after switching** to a different session. If it was
+the last pane, its old session closes too. Directory selections from a popup
+(such as **prefix+A**) preserve the underlying pane. Session/pane selections,
+failed navigation, and navigation within the same session also leave it open.
 
 ## Attention States
 
@@ -126,28 +131,54 @@ state/navigation use. Neither CLI use nor plugin loading changes your theme or
 key bindings. `--help`, `--version`, and outside-tmux state no-ops do not set up
 hooks/formats or create a server.
 
-## Session/Pane picker
+## Session/directory and pane pickers
 
-![session picker with attention icons](docs/session-picker.png)
+### Sessions and directories: `tmux-attention`
 
-- **enter** — jump to a session/window/pane, or create/reuse a directory session.
-- **shift-tab** — next view: sessions → panes → directories → sessions.
-- **tab** — expand/collapse a session in the sessions tree.
-- **ctrl-s** — cycle sorting: `attention` or `name` (sessions/panes).
-- **K** — confirm killing the selected session/window/pane; only `y`/`Y` kills.
-- **ctrl-c / esc** — quit back to the terminal.
+One list combines all existing sessions on the selected tmux server with
+project directories, whether or not any sessions exist:
 
-Movement stays fzf's own, including **ctrl-n/ctrl-p** and **ctrl-j/ctrl-k**.
-The sessions tree starts collapsed. Attention sorting prioritizes failed →
-blocked → done → unknown → working → quiet, breaking ties by latest activity
-(attaching, typing, or pane output). The selected sort mode is remembered
-until the server restarts; each new navigator starts in the sessions view if
-sessions exist. Screenshots may show the older view/new-session key hints.
+- **`[session] name`** — existing sessions, including manually created or renamed
+  ones, ordered by latest activity first, then name for ties.
+- **`[dir] path`** — directories after the sessions, in the order supplied by the
+  built-in walker or `TMUX_ATTENTION_DIR_COMMAND`.
+
+The prompt is `sessions/directories > `; **enter** switches to a session or
+creates/reuses a directory's session. Search matches session names and directory
+paths, not the `[session]` / `[dir]` labels. Fuzzy search **only filters**:
+matching entries keep their original order, not fuzzy-score order. Session
+activity includes the latest activity in any of its windows.
+
+A session and a directory remain separate entries even when they lead to the
+same session. Directory selection uses the exact name-based reuse rule above;
+sessions have no managed/unmanaged ownership distinction. This picker is
+navigation-only: it has no kill action.
+
+### Panes: `tmux-attention panes`
+
+A flat table shows each pane's session, pane label, command, and path on the
+selected server, ordered by attention priority:
+failed → blocked → done → unknown → working → idle → untracked.
+Within a priority, the latest activity comes first, with stable tie-breaks.
+Fuzzy search filters the table without reordering it.
+
+- **enter** — jump to the selected pane.
+- **K** — confirm killing the selected pane; only `y`/`Y` kills. The target is
+  always that pane, even in a single-pane window. Its empty window or session
+  may close as a consequence.
+
+In both pickers, **ctrl-c / esc** quits back to the terminal and movement stays
+fzf's own, including **ctrl-n/ctrl-p** and **ctrl-j/ctrl-k**. There is no tree,
+expansion, view cycling, or sort switching. Session/pane selections and popup
+directory selections preserve the invoking pane; directory selections from a
+pane shell follow the cleanup rule above.
 
 ## CLI reference
 
 ```text
-tmux-attention [directory]         # navigator, or enter a directory's session
+tmux-attention                     # combined session/directory picker
+tmux-attention panes               # flat attention-ordered pane picker
+tmux-attention directory           # create/reuse the directory's session
 tmux-attention -- directory        # disambiguate a reserved name/leading dash
 
 tmux-attention working [pane_id]   # process started/resumed running
@@ -166,10 +197,12 @@ tmux-attention --version
 
 `pane_id` defaults to `$TMUX_PANE`. Outside tmux, valid state commands exit 0
 silently, even with an explicit pane; `run` still executes and propagates the
-command's exit code. Explicit directory arguments switch clients and close the
-source pane inside tmux (unless already in the destination session); outside,
-they require a terminal to attach. Bare invocation with redirected stdin/stdout
-prints usage and exits 1 rather than taking over a script's terminal.
+command's exit code. Directory arguments and directory selections from a pane
+shell close the source pane after switching to a different session. Popup
+selections preserve the underlying pane. Outside tmux, directory arguments
+require a terminal to attach. Bare invocation and `panes` require terminal
+stdin/stdout; redirected invocation prints usage and exits 1 rather than taking
+over a script's terminal.
 
 There is no setup command; `init` is an ordinary directory name. Internal
 `scripts/` entry points are not public API.
@@ -185,18 +218,16 @@ export TMUX_ATTENTION_DIR_HIDDEN='on'
 export TMUX_ATTENTION_DIR_SKIP='.git,node_modules,Library,.cache,.Trash,.local,.npm,.cargo,.rustup,.gradle,.m2,.venv,venv,__pycache__,target,dist,build,.next'
 export TMUX_ATTENTION_DIR_COMMAND=''
 
-export TMUX_ATTENTION_PICKER_EXPAND_KEY='tab'
-export TMUX_ATTENTION_PICKER_VIEW_KEY='shift-tab'
-export TMUX_ATTENTION_PICKER_SORT_KEY='ctrl-s'
 export TMUX_ATTENTION_PICKER_KILL_KEY='K'
 export TMUX_ATTENTION_PICKER_CANCEL_KEY='ctrl-c'
-export TMUX_ATTENTION_PICKER_SORT='attention'
 ```
 
-An empty key disables that action; esc remains fzf's abort. `DIR_HIDDEN=off`
-excludes dotted directories. `DIR_SKIP` lists single path components; empty
-means skip nothing. The walker never follows symlinks. Narrowing `DIR_ROOT`
-to a projects directory is the simplest performance improvement.
+`PICKER_KILL_KEY` applies only to `panes`; `PICKER_CANCEL_KEY` applies to both
+pickers. An empty key disables that configured binding; esc remains fzf's abort.
+`DIR_HIDDEN=off` excludes dotted directories. `DIR_SKIP` lists single path
+components; empty means skip nothing. The walker never follows symlinks.
+Narrowing `DIR_ROOT` to a projects directory is the simplest performance
+improvement.
 
 `DIR_COMMAND` replaces the walker with a shell command producing one directory
 per line. Then root/hidden/skip no longer apply and fzf 0.40 is sufficient.
@@ -253,18 +284,21 @@ bindings. Do not also maintain another installation through mise.
 ### Opt-in bindings
 
 No keys are installed automatically. Add ordinary tmux bindings for
-**prefix+a** (navigator popup) and **prefix+h** (manual marking), or choose your
-own keys:
+**prefix+a** (pane picker), **prefix+A** (session/directory picker), and
+**prefix+h** (manual marking), or choose your own keys. These bindings, not
+the CLI or plugin, create the popups:
 
 ```tmux
-bind-key a display-popup -E -d '#{pane_current_path}' -w 60% -h 60% 'tmux-attention'
+bind-key a display-popup -E -d '#{pane_current_path}' -w 60% -h 60% 'tmux-attention panes'
+bind-key A display-popup -E -d '#{pane_current_path}' -w 60% -h 60% 'tmux-attention'
 bind-key h run-shell 'tmux-attention toggle "#{pane_id}"'
 ```
 
 For mise without an activated PATH, use its stable shim instead:
 
 ```tmux
-bind-key a display-popup -E -d '#{pane_current_path}' -w 60% -h 60% '~/.local/share/mise/shims/tmux-attention'
+bind-key a display-popup -E -d '#{pane_current_path}' -w 60% -h 60% '~/.local/share/mise/shims/tmux-attention panes'
+bind-key A display-popup -E -d '#{pane_current_path}' -w 60% -h 60% '~/.local/share/mise/shims/tmux-attention'
 bind-key h run-shell '~/.local/share/mise/shims/tmux-attention toggle "#{pane_id}"'
 ```
 
@@ -292,9 +326,6 @@ set -g @attention_icon_idle    ''
 
 # Render working as unknown after N seconds without an update; no state rewrite.
 set -g @attention_stale_timeout 'off'
-
-set -g @attention_picker_collapsed_icon '▶'
-set -g @attention_picker_expanded_icon  '▼'
 ```
 
 ## Agent integration
@@ -353,15 +384,15 @@ checkout path or shell alias is needed.
 
 - Replace `tmux-attention new DIR` with `tmux-attention DIR`.
 - Replace `tmux-attention pick` and argument-free `new` with `tmux-attention`.
-- Bare invocation now starts with sessions if available, rather than directories.
+- Bare invocation always combines sessions and directories; use
+  `tmux-attention panes` for the separate pane picker.
 - Replace `@attention_picker_dir_*` with `TMUX_ATTENTION_DIR_*` environment variables.
-- Replace picker `@attention_picker_*_key` settings with `TMUX_ATTENTION_PICKER_*_KEY`;
-  the `new`/ctrl-n action and `@attention_new_key` are removed.
-- `TMUX_ATTENTION_PICKER_SORT` supplies the initial sort; the server option of
-  the old name is internal remembered state. Startup view is no longer configurable.
+- Configure only the kill key (panes) and cancel key (both pickers) through the
+  [CLI preferences](#cli-preferences). Remove former expand/view/sort settings
+  and tree-icon overrides; ordering is fixed and there is no view cycling.
+- Update [tmux bindings](#opt-in-bindings): prefix+a calls `tmux-attention panes`,
+  prefix+A calls bare `tmux-attention`. Shell aliases can stay bare.
 - Keep only one installation; update hook paths and reload tmux after switching.
-  Remove a previously installed prefix+A directory binding with `unbind-key A`
-  if that binding still belongs to tmux-attention, or restart the server.
 
 ## Development and releases
 

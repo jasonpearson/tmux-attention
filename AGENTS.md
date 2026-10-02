@@ -6,17 +6,18 @@ Guidance for coding agents working in this repo.
 
 A CLI with optional tmux UI/plugin integration, pure Bash ≥ 3.2, with
 no runtime dependencies beyond standard Unix tools, tmux (≥ 3.3),
-fzf (≥ 0.40 for both pickers, ≥ 0.48 for the directory picker's built-in
-walk), and optionally `column` (picker table alignment). It tracks the
-state of long-running work per pane in tmux pane user options and
-surfaces icons in the status bar plus an fzf session picker.
+fzf (≥ 0.40 for both pickers, ≥ 0.48 for the built-in directory
+walker), and optionally `column` (pane table alignment). It tracks
+long-running work in tmux pane user options and surfaces attention icons
+in native tmux formats and a flat pane picker. Bare navigation combines
+existing sessions and directories.
 
 ## Layout
 
 - `attention.tmux` — optional TPM/tpack adapter registering the same native
   formats and seen hooks as CLI use, without theme rewrites or bindings.
-- `bin/tmux-attention` — public CLI: bare navigation, directory argument,
-  states, clear/toggle, run, help/version. Resolves executable symlinks.
+- `bin/tmux-attention` — public CLI: combined navigation, `panes`, directory
+  argument, states, clear/toggle, run, help/version. Resolves executable symlinks.
   Implements the seen rule and blocked guard in `record()`.
 - `scripts/helpers.sh` — shared functions; sourced, never executed.
   Environment/option access, automatic idempotent setup, state priorities,
@@ -27,16 +28,18 @@ surfaces icons in the status bar plus an fzf session picker.
   `#{T:@attention_session}` etc. No shell render jobs.
 - `scripts/seen.sh` — focus-hook handler: focused panes in a notifying
   state (blocked/failed/done) downgrade to idle.
-- `scripts/picker.sh` — the fzf popup: sessions tree and flat panes
-  views, sorting, column alignment, jump, and the confirmed kill.
-- `scripts/new-session.sh` — directory picker/direct directory → session
-  named after its canonical leaf. A private implementation, not public API.
+- `scripts/picker.sh` — flat pane picker: attention ordering, column alignment,
+  jump, and confirmed pane kill.
+- `scripts/new-session.sh` — combined session/directory picker and direct
+  directory → session named after its canonical leaf. Private implementation,
+  not public API. Both pickers run in the invoking terminal.
 - `VERSION`, `scripts/package.sh` — release version and portable tar.gz builder;
   archives preserve bin/ and scripts/ for mise's GitHub backend to discover.
 - `tests/run-tests.sh` — acceptance tests against isolated tmux servers
   (`-L` sockets), including native-format-tests.sh (priorities, live icons and
   staleness), cli-tests.sh, directory-tests.sh (source-pane cleanup),
-  terminal-tests.sh (real PTYs via a driver tmux server),
+  pane-picker-tests.sh, launcher-tests.sh, terminal-tests.sh (real PTYs,
+  including picker-cleanup-tests.sh for shell/popup cleanup),
   package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
@@ -61,33 +64,32 @@ surfaces icons in the status bar plus an fzf session picker.
 
 - **bash 3.2 compatibility**: no associative arrays, no `$'\uXXXX'`
   escapes. Indexed arrays are fine.
-- **fzf floor is 0.40** because of the `transform-header` bind action
-  (added exactly in 0.40.0). Check fzf's CHANGELOG before using any
-  newer action and bump the README requirement if you must. The one
-  exception is the directory picker's default source, fzf's built-in
-  walker (`--walker-root`/`--walker-skip`, 0.48): it degrades to a
-  message pointing at `TMUX_ATTENTION_DIR_COMMAND`, so the floor for
-  everything else stays 0.40.
+- **fzf floor is 0.40** for pane navigation and combined navigation with
+  `TMUX_ATTENTION_DIR_COMMAND`. The built-in directory walker requires 0.48
+  (`--walker-root`/`--walker-skip`); older versions get guidance to set a custom
+  source. Check fzf's CHANGELOG before adding newer actions or options.
+- **Walker producer**: use noninteractive `fzf --filter= --no-sort` with
+  terminal stdin and piped stdout; piped stdin would bypass the walker.
+  Clear `FZF_DEFAULT_COMMAND`, `FZF_DEFAULT_OPTS`, and `FZF_DEFAULT_OPTS_FILE`
+  for this producer so inherited commands, sync, tac, or transforms cannot
+  change its behavior. The combined interactive fzf consumer receives the
+  session/directory pipe and uses `--no-sort` to preserve source order.
 - **The walker must not `follow`**: symlinks turn a ~280k-directory home
-  into a multi-minute walk (~10s without). It only runs when nothing is
-  piped to fzf, so the walker branch must not have stdin. The default
-  skip list is a performance feature, not a preference — it takes that
-  same walk from ~281k directories to ~29k (~14s to ~1.2s), most of it
-  `Library`. `--walker-skip` matches a single path component;
+  into a multi-minute walk (~10s without). The default skip list cuts that
+  same walk from ~281k directories to ~29k (~14s to ~1.2s), mostly by skipping
+  `Library`. Preserve root/hidden/skip settings, including an explicitly
+  empty skip list. `--walker-skip` matches a single path component;
   multi-component patterns need fzf 0.57.
-- **Killing is two subcommands on purpose**: `--kill` kills outright and
-  `--kill-confirm` prompts first, and the fzf bind uses `execute` rather
-  than `execute-silent` because only `execute` hands the child the
-  popup's terminal — which is what lets `read` see a keypress on fd 0.
-  Do not fold the prompt into `--kill`: the tests drive it directly with
-  no tty and would hang. The same fd-0 fact is what makes the confirm
-  testable, by piping `y`/`n` in.
-- **The picker header dims its first line with a raw ANSI escape**: fzf
-  renders ANSI inside a `--header` as-is (`--ansi` is for list items, and
-  is not needed). It is the only way to colour *one* header line —
-  `--color=header` would take the keys, the state line, and the panes
-  table's column labels together. Header line numbers are asserted in the
-  tests; adding a line shifts them.
+- **Pane killing**: `--kill` kills outright; `--kill-confirm` prompts first
+  and accepts only `y`/`Y`. Target a pane ID with `kill-pane` even for a
+  single-pane window; never escalate to a window/session target. The fzf bind
+  uses `execute`, which gives the child the terminal so `read` sees a keypress
+  on fd 0. Print prompts to stderr: older fzf leaves callback stdout on the
+  selection pipe. Keep the noninteractive kill separate for tests; confirmation can
+  be tested by piping `y`/`n`. The combined picker is navigation-only.
+- **Pane header styling**: raw ANSI in `--header` dims only the key hints;
+  `--color=header` would also color the table's column labels. `--ansi` is for
+  list items, not headers. Keep header structure consistent with its tests.
 - **Session targets are `=name`**: tmux matches session names by prefix
   otherwise, so `has-session -t bet` finds `beta` and a new session for
   `~/bet` would silently switch you into the wrong one. For window/pane
@@ -98,8 +100,7 @@ surfaces icons in the status bar plus an fzf session picker.
   the has-session lookup misses the session new-session would create.
 - **Tab-delimited plumbing**: `IFS=$TAB read` merges runs of tabs, so
   any field that can be empty carries an `x` sentinel prefix (see
-  `LIST_FMT` in picker.sh) and `#{pane_title}` reads last so it can
-  swallow anything. tmux vis-escapes control characters in format
+  `LIST_FMT` in picker.sh). tmux vis-escapes control characters in format
   output, so fields can't contain raw tabs.
 - **Character width**: wcwidth (`column(1)`), tmux, fzf, and the
   terminal all disagree about emoji widths. Never pre-pad icons with
@@ -128,40 +129,54 @@ surfaces icons in the status bar plus an fzf session picker.
   slots for concurrent first use, and refresh on install relocation/version
   changes. Never perform setup when sourcing helpers/formats, rendering icons,
   showing help/version, or executing outside-tmux state no-ops.
-- Bindings belong to the user's tmux config, not CLI/plugin setup. Document
-  opt-in `display-popup`/`run-shell` bindings calling the public CLI. Use stable
-  mise shims or `mise exec` rather than versioned installation paths. Read CLI
+- Bindings belong to the user's tmux config, not CLI/plugin setup. The CLI
+  never creates popups. Document opt-in `display-popup` bindings: prefix+a
+  calls `tmux-attention panes`, prefix+A calls bare `tmux-attention`; shell
+  aliases remain bare. Use `run-shell` for state bindings. Use stable mise
+  shims or `mise exec` rather than versioned installation paths. Read CLI
   preferences at invocation time, never capture them during plugin loading.
   If a popup needs POSIX setup commands, pass `/bin/sh -c` argv explicitly;
   tmux's default-shell need not understand them.
 - `attention_option` and `attention_env` distinguish *set to empty* (disable an
   icon/key) from *unset* (default). Don't replace them with `${var:-default}`.
 - CLI/picker preferences use `TMUX_ATTENTION_*` environment variables, so cold
-  starts work. Tmux options configure presentation or store runtime state; do
-  not add a parallel tmux-option configuration API for CLI preferences.
+  starts work. Keep directory-source settings; `TMUX_ATTENTION_PICKER_KILL_KEY`
+  applies only to panes and `TMUX_ATTENTION_PICKER_CANCEL_KEY` to both pickers.
+  Tmux options configure presentation or store runtime state; do not add a
+  parallel tmux-option configuration API for CLI preferences.
 - Outside tmux, valid CLI *state* commands exit 0 silently (`run` still executes
   its command and preserves its exit code). Navigation attaches outside tmux
   and switches inside. Never auto-create a server for help, browsing or abort.
-- Bare invocation requires tty stdin/stdout; otherwise usage and exit 1. It
-  opens sessions if available, directories otherwise. A direct directory can
-  switch headlessly inside tmux; outside, reject missing tty BEFORE creating a
-  session. Explicit directory navigation closes the invoking `$TMUX_PANE`
-  only after a successful switch; its last pane may take the source session
-  with it. Never close a pane belonging to the destination session (including
-  linked windows), or close the source on failure or interactive picker use.
-  There are no public `pick`/`new`/`init` commands; these names are ordinary
-  directory arguments.
-- Shift-tab always cycles sessions -> panes -> directories -> sessions, with
-  invocation-local views (private --panes/--sessions flags), no --from-dir or
-  persistent startup view. Sort choice is remembered server-side; its initial
-  value comes from TMUX_ATTENTION_PICKER_SORT.
-- The pickers hand off to each other with `exec` (a sentinel from fzf
-  `become`, turned into an exec by the main flow), never by `become`-ing
-  the other script. `become` would leave the second picker nested inside
-  the first's `$()` capture with piped std streams, and `tmux attach`
-  needs a real terminal ("open terminal failed: not a terminal"). Keeping
-  every picker at the top level is what makes attach work from a bare
-  shell — and lets fzf's own abort (esc/ctrl-c) exit straight out.
+- Bare invocation and `panes` require tty stdin/stdout; otherwise usage and
+  exit 1. A direct directory can switch headlessly inside tmux; outside, reject
+  missing tty BEFORE creating a session. Directory arguments and directory
+  selections from a pane shell close the invoking `$TMUX_PANE` only after a
+  successful switch; its last pane may take the source session with it.
+  For interactive cleanup, require stdin's `tty` to match that pane's
+  `#{pane_tty}`: popups may inherit `TMUX_PANE` but use another terminal.
+  Missing/unverifiable terminal identity preserves the pane; explicit
+  arguments retain headless cleanup. Preserve source panes on failure,
+  session/pane selections, and when they belong to the destination (including
+  linked windows). `panes` is reserved: use `./panes` or `-- panes` for that
+  directory. `pick`/`new`/`init` remain ordinary directory names, not commands.
+- **Combined navigation**: bare invocation always combines every session on
+  the selected server (including manual/renamed sessions) with directories.
+  `[session] name` rows come first, ordered by descending
+  `max(session_activity, all window_activity)`, then name. `[dir] path` rows
+  follow in source order. Search names/paths only, excluding the type labels.
+  Keep session and directory entries even when they share a destination;
+  directory reuse stays exact-name-based, with no ownership model.
+- **Pane navigation**: `tmux-attention panes` lists each pane once in a flat
+  session/pane/command/path table, ordered by attention priority, descending
+  activity, then stable ties.
+  Linked panes retain the displayed session/window IDs in hidden trailing
+  fields; use that context for jumping, and only the pane ID for killing.
+  Both pickers use fuzzy search only to filter, preserving input order. Keep
+  ordering fixed and the commands separate: no tree expansion, view/sort
+  switching, remembered sort/view state, or tree-icon configuration.
+- **Terminal ownership**: interactive fzf may read a candidate pipe, but attach
+  runs afterward with the caller's terminal stdin/stdout. Preserve that handoff
+  outside tmux and let abort return directly to the caller.
 
 ## Making changes
 
@@ -170,8 +185,8 @@ surfaces icons in the status bar plus an fzf session picker.
   timestamps need >1s spacing (second precision).
 - README.md is the only user documentation (there is no SPEC.md). Keep
   these sections in sync with the code: "Attention States" (the table's
-  icons and priorities), "Session/Pane picker" (keys, views, sort
-  modes), the CLI reference (mirrors `usage()` in bin/tmux-attention),
+  icons and priorities), "Session/directory and pane pickers" (entries, keys,
+  fixed ordering), the CLI reference (mirrors `usage()` in bin/tmux-attention),
   "CLI preferences", and "All tmux options", listing every supported setting
   at its real default (internal runtime options are not configuration). A new
   setting needs a line there and, for key/state changes, a prose mention.
