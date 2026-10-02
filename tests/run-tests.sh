@@ -661,12 +661,23 @@ fi
 # create/switch path is testable headlessly. Every session here is looked up
 # with =name: tmux matches session names by prefix otherwise.
 
+# Successful explicit navigation consumes its source pane. Give path/parsing
+# tests disposable windows instead of the beta fixture used by later tests.
+from_directory_pane() {
+  local pane rc
+  pane="$(T new-window -d -t beta: -P -F '#{pane_id}')" || return 1
+  inside "$pane" "$@"
+  rc=$?
+  T kill-pane -t "$pane" 2>/dev/null || true
+  return "$rc"
+}
+
 # pwd -P: on macOS the temp dir lives under a /var -> /private/var symlink,
 # and tmux reports the resolved path
 TMPROOT="$(cd "$(mktemp -d)" && pwd -P)"
 mkdir -p "$TMPROOT/proj" "$TMPROOT/my.proj" "$TMPROOT/bet"
 
-inside "$B1" bash "$NEWSESSION" "$TMPROOT/proj"
+from_directory_pane bash "$NEWSESSION" "$TMPROOT/proj"
 assert_eq 'new-session names the session after the directory leaf' \
   "$(T has-session -t '=proj' 2>/dev/null && echo yes)" yes
 # "=name" is a session target; a pane target (display-message -t) does not
@@ -676,22 +687,22 @@ assert_eq 'new-session roots the session in the directory' \
 
 # tmux rewrites "." and ":" in session names; doing it ourselves up front is
 # what lets has-session find a session we created earlier
-inside "$B1" bash "$NEWSESSION" "$TMPROOT/my.proj"
+from_directory_pane bash "$NEWSESSION" "$TMPROOT/my.proj"
 assert_eq 'new-session sanitizes the session name' \
   "$(T has-session -t '=my_proj' 2>/dev/null && echo yes)" yes
 
 # an existing session of that name wins — no second "proj"
-inside "$B1" bash "$NEWSESSION" "$TMPROOT/proj"
+from_directory_pane bash "$NEWSESSION" "$TMPROOT/proj"
 assert_eq 'new-session reuses an existing session of the same name' \
   "$(T list-sessions -F '#{session_name}' | grep -Fxc proj)" 1
 
 # ...but only on an exact match: "bet" must not land in "beta"
-inside "$B1" bash "$NEWSESSION" "$TMPROOT/bet"
+from_directory_pane bash "$NEWSESSION" "$TMPROOT/bet"
 assert_eq 'new-session does not prefix-match an existing session' \
   "$(T has-session -t '=bet' 2>/dev/null && echo yes)" yes
 
 sessions_before="$(T list-sessions -F '#{session_name}' | grep -c .)"
-inside "$B1" bash "$NEWSESSION" "$TMPROOT/does-not-exist" 2>/dev/null
+from_directory_pane bash "$NEWSESSION" "$TMPROOT/does-not-exist" 2>/dev/null
 assert_eq 'new-session on a missing directory errors' "$?" 1
 assert_eq 'new-session on a missing directory creates nothing' \
   "$(T list-sessions -F '#{session_name}' | grep -c .)" "$sessions_before"
@@ -703,7 +714,7 @@ if [ "$(id -u)" -ne 0 ]; then
   mkdir -p "$TMPROOT/locked"
   chmod 000 "$TMPROOT/locked"
   sessions_before="$(T list-sessions -F '#{session_name}' | grep -c .)"
-  inside "$B1" bash "$NEWSESSION" "$TMPROOT/locked" 2>/dev/null
+  from_directory_pane bash "$NEWSESSION" "$TMPROOT/locked" 2>/dev/null
   locked_rc=$?
   chmod 755 "$TMPROOT/locked"
   assert_eq 'new-session on an unreadable directory errors' "$locked_rc" 1
@@ -712,31 +723,31 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # the CLI delegates: this is the entry point a shell alias would use
-inside "$B1" "$BIN" "$TMPROOT/cli"
+from_directory_pane "$BIN" "$TMPROOT/cli"
 assert_eq 'tmux-attention DIR rejects a missing directory' \
   "$(T has-session -t '=cli' 2>/dev/null && echo yes)" ''
 mkdir -p "$TMPROOT/cli"
-inside "$B1" "$BIN" "$TMPROOT/cli"
+from_directory_pane "$BIN" "$TMPROOT/cli"
 assert_eq 'tmux-attention DIR creates the session' \
   "$(T has-session -t '=cli' 2>/dev/null && echo yes)" yes
 
 mkdir -p "$TMPROOT/space name/child" "$TMPROOT/other/proj"
-(cd "$TMPROOT/space name" && inside "$B1" "$BIN" .)
+(cd "$TMPROOT/space name" && from_directory_pane "$BIN" .)
 assert_eq 'dot resolves to the actual directory leaf including spaces' \
   "$(T list-panes -t '=space name' -F '#{pane_current_path}' | sed -n 1p)" "$TMPROOT/space name"
-(cd "$TMPROOT/space name/child" && inside "$B1" "$BIN" ../)
+(cd "$TMPROOT/space name/child" && from_directory_pane "$BIN" ../)
 assert_eq 'parent and trailing slash reuse the canonical session' \
   "$(T list-sessions -F '#{session_name}' | grep -Fxc 'space name')" 1
-inside "$B1" "$BIN" -- "$TMPROOT/other/proj/"
+from_directory_pane "$BIN" -- "$TMPROOT/other/proj/"
 assert_eq 'same leaf in another directory reuses existing session' \
   "$(T list-panes -t '=proj' -F '#{pane_current_path}' | sed -n 1p)" "$TMPROOT/proj"
-inside "$B1" "$BIN" /
+from_directory_pane "$BIN" /
 assert_eq 'root directory uses root session name' \
   "$(T list-panes -t '=root' -F '#{pane_current_path}' | sed -n 1p)" /
 
 # `cd -- -` still means OLDPWD; the public CLI must treat it as ./- instead.
 mkdir -p "$TMPROOT/-" "$TMPROOT/oldpwd"
-(cd "$TMPROOT" && inside "$B1" env OLDPWD="$TMPROOT/oldpwd" "$BIN" -- -)
+(cd "$TMPROOT" && from_directory_pane env OLDPWD="$TMPROOT/oldpwd" "$BIN" -- -)
 assert_eq 'literal dash directory invocation succeeds' "$?" 0
 assert_eq 'literal dash directory creates a dash-named session' \
   "$(T has-session -t '=-' 2>/dev/null && echo yes)" yes
@@ -846,6 +857,7 @@ assert_contains 'no command without a tty prints usage' \
   "$("$BIN" 2>&1 >/dev/null)" 'usage: tmux-attention'
 
 # Additional acceptance cases share the isolated server and assertions above.
+source "$DIR/tests/directory-tests.sh"
 source "$DIR/tests/cli-tests.sh"
 if bash "$DIR/tests/terminal-tests.sh"; then
   ok 'real-terminal navigation and attach/switch'

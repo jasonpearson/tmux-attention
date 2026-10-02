@@ -80,6 +80,11 @@ symlinks work). The session is named after the resolved directory's leaf;
 exact name wins, even if it was created for another directory with the same
 leaf. Use `./run` or `-- run` for a directory whose name is a command.
 
+Inside tmux, an explicit directory argument **closes the invoking pane after
+switching** to a different session. If it was the last pane, its old session
+closes too. Failed navigation, navigation within the same session, and picker
+selections leave the invoking pane open.
+
 ## Attention States
 
 Each tracked tmux pane has a single state:
@@ -144,9 +149,10 @@ tmux-attention --version
 
 `pane_id` defaults to `$TMUX_PANE`. Outside tmux, valid state commands exit 0
 silently, even with an explicit pane; `run` still executes and propagates the
-command's exit code. Directories switch clients inside tmux and require a
-terminal to attach outside. Bare invocation with redirected stdin/stdout prints
-usage and exits 1 rather than taking over a script's terminal.
+command's exit code. Explicit directory arguments switch clients and close the
+source pane inside tmux (unless already in the destination session); outside,
+they require a terminal to attach. Bare invocation with redirected stdin/stdout
+prints usage and exits 1 rather than taking over a script's terminal.
 
 There is no setup command; `init` is an ordinary directory name. Internal
 `scripts/` entry points are not public API.

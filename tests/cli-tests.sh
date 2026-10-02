@@ -70,11 +70,11 @@ mkdir -p "$TEST_TMP/args/run" "$TEST_TMP/args/--header" "$TEST_TMP/args/pick" \
   "$TEST_TMP/args/init" "$TEST_TMP/args/help"
 (
   cd "$TEST_TMP/args" || exit 1
-  inside "$B1" "$BIN" -- run
-  inside "$B1" "$BIN" -- --header
-  inside "$B1" "$BIN" -- help
-  inside "$B1" "$BIN" pick
-  inside "$B1" "$BIN" init
+  from_directory_pane "$BIN" -- run
+  from_directory_pane "$BIN" -- --header
+  from_directory_pane "$BIN" -- help
+  from_directory_pane "$BIN" pick
+  from_directory_pane "$BIN" init
 )
 T switch-client -c "$CLIENT" -t beta
 for name in run --header help pick init; do

@@ -36,6 +36,9 @@ usage: tmux-attention [directory]
 Navigation switches the client inside tmux and attaches outside it. With no
 sessions, the navigator starts with directories; otherwise it starts with
 sessions. Shift-tab cycles sessions -> panes -> directories -> sessions.
+An explicit directory closes the invoking pane after switching to a different
+session (and closes its session if it was the last pane). Failed navigation,
+same-session navigation and picker selections leave the pane open.
 Bare invocation without a terminal prints usage and exits 1.
 
 pane_id defaults to $TMUX_PANE. Outside tmux state commands are silent no-ops;

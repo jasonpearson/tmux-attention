@@ -152,7 +152,7 @@ pick_dir() {
 # because tmux otherwise matches session names by prefix — picking ~/bet
 # would land you in "beta".
 go_to_dir() {
-  local dir name shown
+  local dir name shown destination_panes source_pane="${2:-}"
   dir="$(expand_tilde "$1")"
   shown="$dir"
   [ -d "$dir" ] || {
@@ -189,7 +189,20 @@ go_to_dir() {
   # The one setup on this path: the session above may have just started the
   # server, and attention_go_to does not repeat it.
   ensure_server_hooks || return 1
-  attention_go_to "=$name"
+  # Never kill a pane in the destination itself (including a window linked
+  # into both sessions). In particular, `tmux-attention .` can be a no-op.
+  if [ -n "$source_pane" ]; then
+    destination_panes="$(tmux list-panes -s -t "=$name" -F '#{pane_id}')" || return 1
+    if printf '%s\n' "$destination_panes" | grep -Fxq -- "$source_pane"; then
+      source_pane=''
+    fi
+  fi
+  attention_go_to "=$name" || return $?
+  # Switch first so removing the source's last pane/session cannot detach the
+  # client. Use the captured ID, never the newly active destination pane.
+  if [ -n "$source_pane" ]; then
+    tmux kill-pane -t "$source_pane"
+  fi
 }
 
 if [ "${1:-}" = '--walker-args' ]; then # how the walk is configured (tests)
@@ -211,6 +224,13 @@ if [ -z "${TMUX:-}" ] || [ "$#" -eq 0 ]; then
   attention_require_terminal || exit 1
 fi
 
+# Only explicit directory arguments replace the invoking pane. Interactive
+# picker selection (including popups) keeps the source pane, as before.
+source_pane=''
+if [ "$#" -gt 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+  source_pane="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_id}' 2>/dev/null)" || source_pane=''
+fi
+
 dir="${1:-}"
 if [ "$#" -eq 0 ]; then
   attention_require fzf || exit 1
@@ -227,4 +247,4 @@ if [ "$#" -eq 0 ]; then
   [ -n "$dir" ] || exit 0
 fi
 
-go_to_dir "$dir"
+go_to_dir "$dir" "$source_pane"

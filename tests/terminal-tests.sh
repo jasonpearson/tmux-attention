@@ -38,10 +38,10 @@ wait_screen() {
   fail "screen did not show: $1"
 }
 wait_result() {
-  local n
+  local n result="${2:-$WORK/result}"
   for ((n=0; n<100; n++)); do
-    if [ -f "$WORK/result" ]; then
-      [ "$(<"$WORK/result")" = "$1" ] || fail "expected exit $1, got $(<"$WORK/result")"
+    if [ -s "$result" ]; then
+      [ "$(<"$result")" = "$1" ] || fail "expected exit $1, got $(<"$result")"
       return 0
     fi
     sleep 0.05
@@ -56,6 +56,42 @@ wait_attached() {
     sleep 0.05
   done
   fail 'CLI did not attach'
+}
+wait_client_session() {
+  local n
+  for ((n=0; n<100; n++)); do
+    [ "$(T list-clients -F '#{session_name}')" != "$1" ] || return 0
+    [ ! -f "$WORK/result" ] || fail "CLI detached instead of switching to $1"
+    sleep 0.05
+  done
+  fail "client did not switch to $1"
+}
+pane_exists() {
+  T list-panes -a -F '#{pane_id}' | grep -Fqx -- "$1"
+}
+wait_pane_closed() {
+  local n
+  for ((n=0; n<100; n++)); do
+    pane_exists "$1" || return 0
+    sleep 0.05
+  done
+  fail "direct directory navigation did not close invoking pane $1"
+}
+# Run through the target pane's real shell, not a headless synthetic $TMUX.
+# Returning commands leave a marker; successful cross-session direct navigation
+# destroys this shell, so those cases wait for its pane to disappear instead.
+invoke_inside() {
+  rm -f "$WORK/inside-result"
+  {
+    printf '#!/usr/bin/env bash\nexport PATH=%q\n' "$WORK/bin:$PATH"
+    printf 'export TMUX_ATTENTION_DIR_COMMAND=%q\n' "$TMUX_ATTENTION_DIR_COMMAND"
+    printf '%q ' "$BIN" "$@"
+    printf '\nprintf "%%s" "$?" > %q\n' "$WORK/inside-result"
+  } > "$WORK/inside.sh"
+  # Keep the typed line short: a just-created pane can still be in canonical
+  # terminal mode, where a long PATH/command line would be silently truncated.
+  T send-keys -t "$TARGET_PANE" -l "bash $(printf %q "$WORK/inside.sh")"
+  T send-keys -t "$TARGET_PANE" Enter
 }
 mkdir -p "$WORK/bin" "$WORK/projects/sample"
 # A user can reference the native options before the first CLI invocation.
@@ -281,26 +317,42 @@ wait_attached
 # The target's shell is really inside tmux: selection must SWITCH, not attach.
 T new-session -d -s another
 TARGET_PANE="$(T list-panes -t '=sample' -F '#{pane_id}')"
-T send-keys -t "$TARGET_PANE" -l "$(printf %q "$BIN")"
-T send-keys -t "$TARGET_PANE" Enter
+invoke_inside
 wait_screen 'view: sessions'
 wait_screen another
 T send-keys -t "$TARGET_PANE" -l another
 wait_screen '> another'
 T send-keys -t "$TARGET_PANE" Enter
-for ((n=0; n<100; n++)); do
-  [ "$(T list-clients -F '#{session_name}')" != another ] || break
-  sleep 0.05
-done
-[ "$(T list-clients -F '#{session_name}')" = another ] || fail 'inside selection did not switch'
+wait_client_session another
+wait_result 0 "$WORK/inside-result"
+pane_exists "$TARGET_PANE" || fail 'bare session picker closed its invoking pane'
 [ "$(T list-clients -F '#{client_name}' | wc -l | tr -d ' ')" -eq 1 ] || fail 'inside selection attached another client'
+
+# Choosing a directory through the bare navigator is also non-destructive.
+# Waiting for its shell marker distinguishes a finished switch from a render
+# that happened before a mistakenly scheduled pane close.
+TARGET_PANE="$(T list-panes -t '=another' -F '#{pane_id}')"
+invoke_inside
+wait_screen 'view: sessions'
+T send-keys -t "$TARGET_PANE" BTab
+wait_screen 'view: panes'
+T send-keys -t "$TARGET_PANE" BTab
+wait_screen 'directories >'
+wait_screen "$WORK/projects/sample"
+T send-keys -t "$TARGET_PANE" Enter
+wait_client_session sample
+wait_result 0 "$WORK/inside-result"
+pane_exists "$TARGET_PANE" || fail 'bare directory picker closed its invoking pane'
+[ "$(T list-clients -F '#{client_name}' | wc -l | tr -d ' ')" -eq 1 ] || fail 'directory picker attached another client'
 detach
 wait_result 0
 
 # Direct relative directory entry does not depend on fzf or the initial view.
+TARGET_PANE="$(T list-panes -t '=sample' -F '#{pane_id}')"
 launch .
 wait_attached
 [ "$(T list-clients -F '#{session_name}')" = sample ] || fail 'dot did not reuse directory session'
+pane_exists "$TARGET_PANE" || fail 'outside direct attach closed the destination pane'
 
 # Exercise the global aggregate in BOTH live status contexts, including normal
 # theme conditions and time-driven staleness. These wrappers exhausted tmux
@@ -404,4 +456,60 @@ done
 [ "$(T show-options -pqv -t "$TARGET_PANE" @attention_state)" = idle ] || fail 'seen hook lost the mise tool PATH'
 detach
 wait_result 0
-printf 'PASS: real-terminal native setup/staleness, cancellation, view cycle, attach, switch, dot, and user bindings\n'
+# Explicit directory navigation closes only the invoking pane after switching.
+# Keep a sibling in the source to catch killing a whole window/session, and
+# reuse that source for both a newly created and an already existing target.
+mkdir -p "$WORK/projects/direct-source" "$WORK/projects/direct-fresh" "$WORK/projects/direct-existing"
+KEEP_PANE="$(T new-session -d -s direct-source -c "$WORK/projects/direct-source" -P -F '#{pane_id}')"
+EXISTING_PANE="$(T new-session -d -s direct-existing -c "$WORK/projects/direct-existing" -P -F '#{pane_id}')"
+# Default detach-on-destroy makes the last-pane case prove switch-before-kill.
+T set-option -g detach-on-destroy on
+launch "$WORK/projects/direct-source"
+wait_attached
+wait_client_session direct-source
+CLIENT="$(T list-clients -F '#{client_name}')"
+pane_exists "$KEEP_PANE" || fail 'outside direct attach closed its destination pane'
+if T has-session -t '=direct-fresh' 2>/dev/null; then fail 'fresh destination already exists'; fi
+for destination in direct-fresh direct-existing; do
+  T switch-client -c "$CLIENT" -t '=direct-source'
+  TARGET_PANE="$(T split-window -t "$KEEP_PANE" -c "$WORK/projects/direct-source" -P -F '#{pane_id}')"
+  invoke_inside "$WORK/projects/$destination"
+  wait_client_session "$destination"
+  wait_pane_closed "$TARGET_PANE"
+  [ "$(T list-clients -F '#{client_name}')" = "$CLIENT" ] || fail 'direct navigation replaced its client'
+  [ "$(T list-panes -s -t '=direct-source' -F '#{pane_id}')" = "$KEEP_PANE" ] ||
+    fail 'direct navigation removed more than its invoking pane'
+  DESTINATION_PANE="$(T list-panes -s -t "=$destination" -F '#{pane_id}')"
+  pane_exists "$DESTINATION_PANE" || fail 'direct navigation closed its destination pane'
+  [ "$(T display-message -p -t "$DESTINATION_PANE" '#{pane_current_path}')" = "$WORK/projects/$destination" ] ||
+    fail 'direct navigation entered the wrong directory'
+  if [ "$destination" = direct-existing ]; then
+    [ "$DESTINATION_PANE" = "$EXISTING_PANE" ] || fail 'direct navigation replaced the existing destination'
+  fi
+done
+
+# A direct argument resolving to the current session is a no-op for its pane,
+# including ".". Its sole pane must remain usable and return success normally.
+TARGET_PANE="$EXISTING_PANE"
+for directory in . "$WORK/projects/direct-existing"; do
+  invoke_inside "$directory"
+  wait_result 0 "$WORK/inside-result"
+  pane_exists "$TARGET_PANE" || fail 'same-session direct navigation closed its invoking pane'
+  [ "$(T list-clients -F '#{client_name}:#{session_name}')" = "$CLIENT:direct-existing" ] ||
+    fail 'same-session direct navigation changed its client'
+done
+
+# Removing the source's final pane removes its session, not the attached
+# client. The same outer attach must return only when we explicitly detach.
+T switch-client -c "$CLIENT" -t '=direct-source'
+TARGET_PANE="$KEEP_PANE"
+invoke_inside "$WORK/projects/direct-existing"
+wait_client_session direct-existing
+wait_pane_closed "$TARGET_PANE"
+if T has-session -t '=direct-source' 2>/dev/null; then fail 'last-pane navigation left its source session'; fi
+[ "$(T list-clients -F '#{client_name}')" = "$CLIENT" ] || fail 'last-pane navigation detached its client'
+pane_exists "$EXISTING_PANE" || fail 'last-pane navigation closed its destination pane'
+[ ! -f "$WORK/result" ] || fail 'outer attach returned before explicit detach'
+detach
+wait_result 0
+printf 'PASS: real-terminal native setup/staleness, cancellation, view cycle, attach, switch, direct pane closure, dot, and user bindings\n'

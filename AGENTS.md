@@ -35,7 +35,8 @@ surfaces icons in the status bar plus an fzf session picker.
   archives preserve bin/ and scripts/ for mise's GitHub backend to discover.
 - `tests/run-tests.sh` — acceptance tests against isolated tmux servers
   (`-L` sockets), including native-format-tests.sh (priorities, live icons and
-  staleness), cli-tests.sh, terminal-tests.sh (real PTYs via a driver tmux server),
+  staleness), cli-tests.sh, directory-tests.sh (source-pane cleanup),
+  terminal-tests.sh (real PTYs via a driver tmux server),
   package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
@@ -143,8 +144,12 @@ surfaces icons in the status bar plus an fzf session picker.
 - Bare invocation requires tty stdin/stdout; otherwise usage and exit 1. It
   opens sessions if available, directories otherwise. A direct directory can
   switch headlessly inside tmux; outside, reject missing tty BEFORE creating a
-  session. There are no public `pick`/`new`/`init` commands; these names are
-  ordinary directory arguments.
+  session. Explicit directory navigation closes the invoking `$TMUX_PANE`
+  only after a successful switch; its last pane may take the source session
+  with it. Never close a pane belonging to the destination session (including
+  linked windows), or close the source on failure or interactive picker use.
+  There are no public `pick`/`new`/`init` commands; these names are ordinary
+  directory arguments.
 - Shift-tab always cycles sessions -> panes -> directories -> sessions, with
   invocation-local views (private --panes/--sessions flags), no --from-dir or
   persistent startup view. Sort choice is remembered server-side; its initial
