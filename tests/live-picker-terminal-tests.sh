@@ -137,7 +137,7 @@ live_signal_diagnostics() {
   fzf_pid="$(<"$WORK/live-fzf-pid")"
   {
     printf 'signal diagnostics: Bash %s; picker PID=%s; fzf PID=%s\n' "$BASH_VERSION" "$picker_pid" "$fzf_pid"
-    D display-message -p -t "$PANE" 'tmux=#{version} pane=#{pane_id} tty=#{pane_tty} dead=#{pane_dead} status=#{pane_dead_status} signal=#{pane_dead_signal}' || true
+    D display-message -p -t "$PANE" 'tmux=#{version} pane=#{pane_id} supervisor=#{pane_pid} tty=#{pane_tty} dead=#{pane_dead} status=#{pane_dead_status} signal=#{pane_dead_signal}' || true
     printf 'Owned processes (PID/PPID/PGID/TPGID/STAT/COMMAND):\n'
     ps -p "$picker_pid,$fzf_pid" -o pid,ppid,pgid,tpgid,stat,comm || true
     tty="$(D display-message -p -t "$PANE" '#{pane_tty}')" || tty=''
@@ -268,7 +268,7 @@ live_picker_terminal_tests() {
   local TARGET="${TARGET}-live" PANE real_fzf alpha beta gamma pane i mode
   local linked linked_window parking since steady aging kill_pane sibling window
   local before n old_tmpdir="${TMPDIR-}" commands paths panes
-  local original_ids replacement_ids original_pid empty_pid replacement picker_pid sig status pane_exit
+  local original_ids replacement_ids original_pid empty_pid replacement picker_pid sig status signal_result
   real_fzf="$(command -v fzf)"
   cp "$WORK/bin/tmux" "$WORK/tmux-before-live"
   {
@@ -609,29 +609,42 @@ live_picker_terminal_tests() {
 
   # Signal the picker PID, NOT its whole process group. A foreground $(fzf)
   # wait defers Bash traps indefinitely; the owned fzf must be stopped/reaped
-  # before cleaning private files, without waiting for a keypress.
+  # before cleaning private files, without waiting for a keypress. Reap it
+  # directly: Ubuntu's tmux 3.4 can report pane_dead=1 while leaving the exited
+  # picker unreaped and pane_dead_status blank. Preserve stdin explicitly for
+  # the asynchronous child, and keep its supervisor/PTY alive until cleanup is
+  # verified so terminal teardown cannot hide a leaked fzf process.
   pane="$(live_fixture live-signal LIVESIGNAL pi)"
   for sig in TERM HUP; do
+    rm -f "$WORK/live-picker-pid" "$WORK/live-signal-result"
     {
       printf '#!/usr/bin/env bash\nunset TMUX TMUX_PANE\n'
-      printf 'export PATH=%q\nexec %q panes\n' "$WORK/bin:$PATH" "$BIN"
+      printf 'export PATH=%q\n%q panes <&0 &\npicker_pid=$!\n' "$WORK/bin:$PATH" "$BIN"
+      printf 'printf "%%s\\n" "$picker_pid" > %q\n' "$WORK/live-picker-pid"
+      printf 'rc=0\nwait "$picker_pid" || rc=$?\nprintf "%%s\\n" "$rc" > %q\n' "$WORK/live-signal-result"
+      printf 'exec sleep 300\n'
     } > "$WORK/live-signal.sh"
     PANE="$(D new-window -d -P -F '#{pane_id}' "$(command -v bash)" "$WORK/live-signal.sh")"
-    picker_pid="$(D display-message -p -t "$PANE" '#{pane_pid}')"
     wait_matches 1
+    picker_pid="$(<"$WORK/live-picker-pid")"
+    [ "$picker_pid" != "$(D display-message -p -t "$PANE" '#{pane_pid}')" ] || fail 'signal fixture targeted its supervisor'
     kill -s "$sig" "$picker_pid"
     case "$sig" in TERM) status=143 ;; HUP) status=129 ;; esac
+    signal_result=not-returned
     for ((n=0; n<100; n++)); do
-      pane_exit="$(D display-message -p -t "$PANE" '#{pane_dead}:#{pane_dead_status}')" || pane_exit=unavailable
-      [ "$pane_exit" != "1:$status" ] || break
+      if [ -s "$WORK/live-signal-result" ]; then
+        signal_result="$(<"$WORK/live-signal-result")"
+        break
+      fi
       sleep 0.05
     done
-    if [ "$n" -eq 100 ]; then
+    if [ "$signal_result" != "$status" ]; then
       live_signal_diagnostics "$picker_pid"
-      fail "PID-directed $sig: expected dead:status=1:$status within 100 polls, got $pane_exit"
+      fail "PID-directed $sig: expected exit $status within 100 polls, got $signal_result"
     fi
     live_wait_clean
     pane_exists "$pane" || fail "PID-directed $sig changed the target pane"
+    D kill-pane -t "$PANE"
   done
   stop_target_server
 
