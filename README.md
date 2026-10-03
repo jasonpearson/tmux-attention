@@ -24,7 +24,7 @@ fzf ≥ 0.40 with a custom directory source, or ≥ 0.48 for the default walker.
 ### Mise
 
 ```sh
-mise use -g tmux fzf github:jasonpearson/tmux-attention@0.2.0
+mise use -g tmux fzf github:jasonpearson/tmux-attention@0.3.0
 tmux-attention
 ```
 
@@ -32,7 +32,7 @@ Or add to `~/.config/mise/config.toml` and run `mise install`:
 
 ```toml
 [tools]
-"github:jasonpearson/tmux-attention" = "0.2.0"
+"github:jasonpearson/tmux-attention" = "0.3.0"
 # Keep your existing tmux/fzf version pins, or add them if missing.
 ```
 
@@ -71,7 +71,7 @@ are immediately available without reinstalling.
 To return to the release:
 
 ```sh
-mise use -g github:jasonpearson/tmux-attention@0.2.0
+mise use -g github:jasonpearson/tmux-attention@0.3.0
 ```
 
 ### Source or release archive
