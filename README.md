@@ -221,10 +221,10 @@ commands, paths and the shared filter update without reopening. Rows and column
 labels refresh together; the query and selected pane ID survive reordering.
 Activity-only changes that leave the table unchanged do not reload it, avoiding
 periodic flicker. If that pane disappears or no longer matches, selection moves
-to a remaining match. Kill confirmation keeps its captured pane target, even as
-other work changes. A disconnected/replaced server closes the picker rather than
-following reused pane IDs. Refresh work stops on accept/cancel; there is no
-background daemon.
+to a remaining match. Enter and kill confirmation keep their captured pane
+targets, even during a refresh. A disconnected/replaced server closes the picker
+rather than following reused pane IDs. Refresh work stops on accept/cancel;
+there is no background daemon.
 The icon tabstop is fixed for each opening; reopen after configuring wider icons.
 The session/directory picker remains a snapshot and does not repeat directory walks.
 

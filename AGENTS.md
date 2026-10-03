@@ -216,9 +216,11 @@ existing sessions and directories.
   load. Compare complete staged frames too (including hidden IDs): activity-only
   changes commit only key/server metadata through the same guarded publisher,
   avoiding identical reloads and spinner flicker. Filter/kill cancel pending
-  work and force a new snapshot. Confirmation
-  captures its pane ID and owns the terminal. Abort must also exit during keyed
-  reload (double abort). Bind to a server PID: replacement/disconnect exits;
+  work and force a new snapshot. Confirmation captures its pane ID and owns the
+  terminal. Abort must also exit during keyed reload (double abort). Enter clears
+  fzf's keyed input guard, captures the current row via `{}`, then aborts; native
+  accept after untracking could output a later merger's row at the same index.
+  Bind to a server PID: replacement/disconnect exits;
   revalidate actions, including after confirmation, against reused IDs. Private
   temporary frames are removed before attach/return. Wait interruptibly for the
   owned fzf PID; PID-directed signals must terminate/reap it before cleanup.

@@ -153,7 +153,7 @@ fzf_live_supported() {
 }
 
 live_picker() {
-  local dir selection rc server session window row callback refresh action cleanup size fzf_pid=''
+  local dir selection rc server session window row callback refresh action accept cleanup size fzf_pid=''
   local GUTTER I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE
   local fzf_args
   dir="$(mktemp -d "${TMPDIR:-/tmp}/tmux-attention-picker.XXXXXXXX")" || return 1
@@ -169,13 +169,18 @@ live_picker() {
   callback="$(attention_shell_quote "$SELF")"
   refresh="$callback --live-refresh $(attention_shell_quote "$dir")"
   action="$callback --live-action $(attention_shell_quote "$dir")"
+  # fzf drops ordinary actions during keyed reload. Clear that input guard,
+  # capture the current row while expanding {}, then abort. Plain accept after
+  # untracking could instead output a later merger's row at the same index.
+  accept="printf '%s\\n' {} > $(attention_shell_quote "$dir/accepted")"
   fzf_args=(--ansi --reverse --no-sort --no-tac --no-multi --sync --prompt 'panes > '
     --delimiter "$TAB" --with-nth '2..-3' --track --id-nth 1 --header-lines 3 --no-header --no-footer
     --tabstop "$GUTTER" --with-shell "$(attention_shell_quote "$BASH") -c"
     --bind "every(1):unbind(every(1))+bg-transform:$refresh"
     --bind "load:change-header-lines(0)+change-header-lines(3)+unbind(every(1))+bg-transform:$refresh"
     --bind "resize:unbind(every(1))+bg-cancel+bg-transform:$refresh force"
-    --bind 'esc:abort+abort,ctrl-c:abort+abort,ctrl-g:abort+abort,ctrl-q:abort+abort')
+    --bind 'esc:abort+abort,ctrl-c:abort+abort,ctrl-g:abort+abort,ctrl-q:abort+abort'
+    --bind "enter:untrack-current+unbind(every(1))+bg-cancel+execute-silent($accept)+abort+abort")
   picker_keys
   if [ -n "$filter_key" ]; then
     fzf_args+=(--bind "$filter_key:unbind(every(1))+bg-cancel+execute-silent($action --cycle-filter)+bg-transform:$refresh force")
@@ -193,7 +198,12 @@ live_picker() {
   wait "$fzf_pid"
   rc=$?
   fzf_pid=''
-  selection="$(<"$dir/selection")"
+  if [ -f "$dir/accepted" ]; then
+    selection="$(<"$dir/accepted")"
+    rc=0
+  else
+    selection="$(<"$dir/selection")"
+  fi
   server="$(<"$dir/server")"
   # fzf has stopped its worker before terminal ownership passes to attach.
   rm -rf -- "$dir"
