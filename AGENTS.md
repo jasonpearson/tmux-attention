@@ -6,8 +6,9 @@ Guidance for coding agents working in this repo.
 
 A CLI with optional tmux UI/plugin integration, pure Bash ≥ 3.2, with
 no runtime dependencies beyond standard Unix tools, tmux (≥ 3.3),
-fzf (≥ 0.40 for both pickers, ≥ 0.48 for the built-in directory
-walker), and optionally `column` (pane table alignment). It tracks
+fzf (≥ 0.73 for live panes, ≥ 0.40 for combined navigation with a custom
+source, ≥ 0.48 for the built-in directory walker), and optionally `column`
+(pane table alignment). It tracks
 long-running work in tmux pane user options and surfaces attention icons
 in native tmux formats and a flat pane picker. Bare navigation combines
 existing sessions and directories.
@@ -30,6 +31,8 @@ existing sessions and directories.
   state (blocked/failed/done) downgrade to idle.
 - `scripts/picker.sh` — shared pane ranking/jump and the flat pane picker:
   ordinary/subagent grouping, command filtering, column alignment, and pane kill.
+- `scripts/picker-live.sh` — source-only private snapshot/refresh orchestration:
+  fzf-owned workers, coherent headers/rows, pane-ID tracking, and server identity.
 - `scripts/new-session.sh` — combined session/directory picker and direct
   directory → session named after its canonical leaf. Private implementation,
   not public API. Both pickers run in the invoking terminal.
@@ -40,7 +43,8 @@ existing sessions and directories.
   staleness), cli-tests.sh, directory-tests.sh (source-pane cleanup),
   pane-picker-tests.sh (including pane-filter-tests.sh), subagent-pane-tests.sh,
   launcher-tests.sh, jump-tests.sh, and terminal-tests.sh (real PTYs, including
-  direct jumps, shell/popup cleanup, pane filtering, and subagent grouping),
+  direct jumps, shell/popup cleanup, pane filtering, subagent grouping, live
+  refresh/lifetime, and help-hint layout),
   package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
@@ -65,10 +69,11 @@ existing sessions and directories.
 
 - **bash 3.2 compatibility**: no associative arrays, no `$'\uXXXX'`
   escapes. Indexed arrays are fine.
-- **fzf floor is 0.40** for pane navigation and combined navigation with
-  `TMUX_ATTENTION_DIR_COMMAND`. The built-in directory walker requires 0.48
-  (`--walker-root`/`--walker-skip`); older versions get guidance to set a custom
-  source. Check fzf's CHANGELOG before adding newer actions or options.
+- **fzf floors**: live panes require 0.73 (`every(N)` plus `--id-nth` tracking),
+  checked before setup. Combined navigation still needs 0.40 with
+  `TMUX_ATTENTION_DIR_COMMAND`, or 0.48 for the built-in walker
+  (`--walker-root`/`--walker-skip`). Jump and state/listing callbacks need no fzf.
+  Check fzf's CHANGELOG before adding newer actions or options.
 - **Walker producer**: use noninteractive `fzf --filter= --no-sort` with
   terminal stdin and piped stdout; piped stdin would bypass the walker.
   Clear `FZF_DEFAULT_COMMAND`, `FZF_DEFAULT_OPTS`, and `FZF_DEFAULT_OPTS_FILE`
@@ -88,9 +93,12 @@ existing sessions and directories.
   on fd 0. Print prompts to stderr: older fzf leaves callback stdout on the
   selection pipe. Keep the noninteractive kill separate for tests; confirmation can
   be tested by piping `y`/`n`. The combined picker is navigation-only.
-- **Pane header styling**: raw ANSI in `--header` dims only the key hints;
-  `--color=header` would also color the table's column labels. `--ansi` is for
-  list items, not headers. Keep header structure consistent with its tests.
+- **Pane header styling**: live frames use `--header-lines 3`: `filter:` menu
+  (active bold, inactive SGR 90), spacer, aligned labels. The muted right-aligned
+  help hint shares the menu line; narrow widths shorten it, then show only the
+  active filter if needed. `?` is reserved: toggle a separate optional key-hint
+  `--header`, hidden initially, without changing query/filter/selection. Keep
+  labels unmuted; whole-header coloring would dim them too.
 - **Session targets are `=name`**: tmux matches session names by prefix
   otherwise, so `has-session -t bet` finds `beta` and a new session for
   `~/bet` would silently switch you into the wrong one. For window/pane
@@ -176,14 +184,14 @@ existing sessions and directories.
   priority, descending activity, then stable ties. Group BEFORE deduplicating:
   any ordinary membership wins for linked panes, retaining its highest-ranked
   ordinary context. Carry session/window IDs in hidden trailing fields for
-  navigation; use only the pane ID for killing. Dim only subagent session names
-  AFTER text alignment, with fzf `--ansi`; leave icons unchanged. Reset with SGR 0
-  because fzf 0.40 ignores SGR 22. All rows remain selectable panes (fzf 0.40 has
-  no non-selectable in-list headings). Native
-  attention aggregates and combined navigation include subagents as before.
+  navigation; use only the pane ID for killing. Dim entire visible subagent rows
+  AFTER text alignment, including icons, with fzf `--ansi`; keep hidden IDs
+  unstyled. Reset with SGR 0. All candidate rows remain selectable panes;
+  headings live outside the list. Native attention aggregates and combined
+  navigation include subagents as before.
   Both pickers use fuzzy search only to filter, preserving input order. Keep
-  ordering fixed and the commands separate: no tree expansion, view/sort
-  switching, remembered sort/view state, or tree-icon configuration.
+  ordering fixed and the commands separate: no tree expansion, session/pane
+  view switching, remembered sort state, or tree-icon configuration.
 - **Direct jump**: `tmux-attention jump` selects the highest-ranked ordinary
   pane, ignoring and preserving the picker filter. Exclude subagent-only panes;
   linked panes remain eligible through ordinary contexts. Reuse within-group
@@ -192,15 +200,30 @@ existing sessions and directories.
   arrival uses normal seen hooks. Headless inside tmux is valid; outside,
   require a tty before setup/selection. With no eligible panes, silently return
   0 BEFORE setup or tty checks, without creating a server. Bindings stay user-owned.
-- **Pane filtering**: shift-tab cycles all → agents → non-agents → all while
-  keeping the query and within-group order. An agent has `pane_current_command`
-  exactly `pi`, `claude`, or `codex`, independently of attention state/title or
-  subagent-session membership. Search/filter/Enter/K apply equally to both groups;
-  an empty group reserves no space.
-  Persist `all`/`agents`/`non-agents` in global `@attention_picker_filter`;
-  unset/invalid means all. This is shared server-lifetime runtime state, not
-  configuration. Rendering is read-only; cycling on a cold server is a no-op.
-  Apply the filter before column alignment, including after kill/reload.
+- **Pane filtering**: shift-tab cycles all → agents → agents-and-subagents →
+  non-agents → all, preserving query and within-group order. Agents/non-agents
+  contain ordinary panes only; agents are exact `pi`/`claude`/`codex` commands.
+  Agents-and-subagents adds EVERY subagent-only pane, including shells. Resolve
+  ordinary linked membership BEFORE filtering; filtering precedes alignment.
+  Persist these four tokens in global `@attention_picker_filter`; unset/invalid
+  means all. Cycle atomically on the server. This is shared server-lifetime UI
+  state, not configuration; rendering stays read-only, cold cycling a no-op.
+- **Live pane refresh**: poll about once per second only while open. Compare
+  raw metadata/options plus elapsed-time stale classification before rendering.
+  Publish a complete header/rows generation, track hidden pane IDs with fzf
+  `--track --id-nth 1`, and preserve queries. Unbind the timer during the one
+  fzf-owned background worker; rearm after an unchanged sample or completed
+  load. Compare complete staged frames too (including hidden IDs): activity-only
+  changes commit only key/server metadata through the same guarded publisher,
+  avoiding identical reloads and spinner flicker. Filter/kill cancel pending
+  work and force a new snapshot. Confirmation
+  captures its pane ID and owns the terminal. Abort must also exit during keyed
+  reload (double abort). Bind to a server PID: replacement/disconnect exits;
+  revalidate actions, including after confirmation, against reused IDs. Private
+  temporary frames are removed before attach/return. Wait interruptibly for the
+  owned fzf PID; PID-directed signals must terminate/reap it before cleanup.
+  The icon tabstop is fixed
+  per opening; combined navigation remains a snapshot (never rewalk on a timer).
 - **Terminal ownership**: interactive fzf may read a candidate pipe, but attach
   runs afterward with the caller's terminal stdin/stdout. Preserve that handoff
   outside tmux and let abort return directly to the caller.

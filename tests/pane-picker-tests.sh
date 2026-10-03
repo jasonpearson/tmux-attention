@@ -61,11 +61,16 @@ done
 source "$DIR/tests/pane-filter-tests.sh"
 
 pane_header="$(inside "$B1" bash "$PICKER" --header)"
-assert_contains 'pane header describes its fixed ranking' "$pane_header" 'attention first, then recent activity'
+assert_eq 'pane header second line lists all four modes without ranking/group prose' \
+  "$(printf '%s\n' "$pane_header" | sed -n 2p | sed $'s/\033\\[[0-9;]*m//g')" \
+  'filter: all - agents - agents-and-subagents - non-agents'
+assert_eq 'pane header has no explanatory ranking or grouping prose' \
+  "$(printf '%s\n' "$pane_header" | grep -Ec 'attention first|recent activity|ordinary before|rank|group')" 0
+assert_contains 'pane header advertises Enter navigation' "$pane_header" 'enter: jump'
 assert_contains 'pane header advertises confirmed pane kill' "$pane_header" 'K: kill pane'
 assert_contains 'pane header advertises cancel' "$pane_header" 'ctrl-c: quit'
 assert_contains 'pane header advertises filter cycling' "$pane_header" 'shift-tab: filter'
-assert_contains 'pane header dims only hotkey hints' \
+assert_contains 'pane header keeps hotkey hints dimmed on line one' \
   "$(printf '%s\n' "$pane_header" | head -1)" "$(printf '\033[90m')"
 assert_eq 'pane header omits view/expand/sort controls' \
   "$(printf '%s\n' "$pane_header" | grep -Ec 'ctrl-s|expand|view:|sort:')" 0
@@ -79,6 +84,8 @@ for pref in KILL CANCEL FILTER; do
   case "$pref" in KILL) pane_hint=': kill pane' ;; CANCEL) pane_hint=': quit' ;; FILTER) pane_hint=': filter' ;; esac
   assert_eq "pane header honors empty $pref key" \
     "$(inside "$B1" env "TMUX_ATTENTION_PICKER_${pref}_KEY=" bash "$PICKER" --header | grep -c "$pane_hint")" 0
+  assert_eq "pane header does not advertise reserved ? as $pref" \
+    "$(inside "$B1" env "TMUX_ATTENTION_PICKER_${pref}_KEY=?" bash "$PICKER" --header | grep -c "$pane_hint")" 0
 done
 
 pane_title="$(T display-message -p -t "$A2" '#{pane_title}')"
@@ -192,8 +199,13 @@ assert_eq 'killing a session last pane removes the session naturally' \
 pane_cold="${SOCKET_PATH}-pane-cold"
 assert_eq 'cold pane diagnostic is empty' \
   "$(TMUX="$pane_cold,0,0" bash "$PICKER" --list)" ''
-assert_contains 'cold pane header explains there are no sessions' \
-  "$(TMUX="$pane_cold,0,0" bash "$PICKER" --header)" 'No panes:'
+pane_cold_header="$(TMUX="$pane_cold,0,0" bash "$PICKER" --header)"
+assert_contains 'cold pane header explains there are no sessions' "$pane_cold_header" 'No panes:'
+assert_eq 'cold pane header also keeps the exact four-mode menu on line two' \
+  "$(printf '%s\n' "$pane_cold_header" | sed -n 2p | sed $'s/\033\\[[0-9;]*m//g')" \
+  'filter: all - agents - agents-and-subagents - non-agents'
+assert_contains 'cold pane header bolds the default all mode' \
+  "$(printf '%s\n' "$pane_cold_header" | sed -n 2p)" $'filter: \033[1mall\033[0m - \033[90magents\033[0m'
 pane_cycle_output="$(TMUX="$pane_cold,0,0" bash "$PICKER" --cycle-filter)"
 pane_cycle_rc="$?"
 assert_eq 'cold filter cycling is a silent no-op' "$pane_cycle_output" ''
@@ -204,4 +216,4 @@ assert_eq 'cold pane diagnostics leave server absent' \
 unset pane_rows pane_header pane_hint pane_title pane_labels pane_text pane_state \
   pane_rank_ids pane_expected pane_fixture pane_victim pane_sibling pane_cold \
   pane_linked_row pane_context pane_context_name pane_confirm_output \
-  pane_plain_bin pane_plain_rows pane_tool pane_cycle_output pane_cycle_rc
+  pane_plain_bin pane_plain_rows pane_tool pane_cycle_output pane_cycle_rc pane_cold_header

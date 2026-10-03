@@ -228,11 +228,15 @@ launch() {
 # for the next suite's first-use assertions. Subagents uses its own fresh socket
 # so it never races a preceding suite's kill-server with new-session.
 case "${1:-}" in
+  --help-only) source "$ROOT/tests/picker-help-terminal-tests.sh"; exit 0 ;;
+  --live-only) source "$ROOT/tests/live-picker-terminal-tests.sh"; exit 0 ;;
   --subagents-only) source "$ROOT/tests/subagent-pane-terminal-tests.sh"; exit 0 ;;
   --jump-only) source "$ROOT/tests/jump-terminal-tests.sh"; exit 0 ;;
   --filter-only) source "$ROOT/tests/pane-filter-terminal-tests.sh"; exit 0 ;;
   --cleanup-only) source "$ROOT/tests/picker-cleanup-tests.sh"; exit 0 ;;
 esac
+source "$ROOT/tests/picker-help-terminal-tests.sh"
+source "$ROOT/tests/live-picker-terminal-tests.sh"
 source "$ROOT/tests/subagent-pane-terminal-tests.sh"
 source "$ROOT/tests/jump-terminal-tests.sh"
 source "$ROOT/tests/pane-filter-terminal-tests.sh"

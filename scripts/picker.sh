@@ -4,9 +4,9 @@
 #
 #   picker.sh                    interactive pane picker
 #   picker.sh --jump             top ordinary pane, ignoring command filters
-#   picker.sh --list             print rows (fzf reload)
-#   picker.sh --header           print the header (fzf transform-header)
-#   picker.sh --cycle-filter     remember all -> agents -> non-agents -> all
+#   picker.sh --list             print diagnostic rows
+#   picker.sh --header           print the diagnostic header
+#   picker.sh --cycle-filter     cycle all/agents/agents-and-subagents/non-agents
 #   picker.sh --kill <pane-id>    kill only the specified pane
 #   picker.sh --kill-confirm <pane-id>
 #                                prompt on the terminal, then kill on y/Y
@@ -15,6 +15,9 @@ CURRENT_DIR="$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 source "$CURRENT_DIR/helpers.sh"
 SELF="$CURRENT_DIR/picker.sh"
+# Source-only: live callbacks and version checks never run during listing/jump.
+source "$CURRENT_DIR/picker-live.sh"
+LIVE_SERVER=''
 VS16="$(printf '\xef\xb8\x8f')"
 
 # Tab-delimited plumbing: read merges empty tab fields, so potentially empty
@@ -65,50 +68,63 @@ picker_filter() {
   local filter
   filter="$(tmux show-options -gqv @attention_picker_filter 2>/dev/null)" || filter=''
   case "$filter" in
-    all | agents | non-agents) printf '%s' "$filter" ;;
+    all | agents | agents-and-subagents | non-agents) printf '%s' "$filter" ;;
     *) printf all ;;
   esac
 }
 
 cycle_filter() {
-  local next
-  # Browsing an empty picker must not bootstrap a tmux server.
+  # Expand on the server so simultaneous pickers cannot lose a cycle between
+  # reading and writing. Unset/invalid means all; cold browsing stays a no-op.
   tmux list-sessions >/dev/null 2>&1 || return 0
-  case "$(picker_filter)" in
-    all) next=agents ;;
-    agents) next=non-agents ;;
-    non-agents) next=all ;;
-  esac
-  tmux set-option -g @attention_picker_filter "$next"
+  tmux set-option -gF @attention_picker_filter '#{?#{==:#{@attention_picker_filter},agents},agents-and-subagents,#{?#{==:#{@attention_picker_filter},agents-and-subagents},non-agents,#{?#{==:#{@attention_picker_filter},non-agents},all,agents}}}'
 }
 
 picker_keys() {
   kill_key="$(attention_env TMUX_ATTENTION_PICKER_KILL_KEY K)"
   cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
   filter_key="$(attention_env TMUX_ATTENTION_PICKER_FILTER_KEY shift-tab)"
+  # Help owns ?, so neither bind nor advertise a conflicting action.
+  [ "$kill_key" != '?' ] || kill_key=''
+  [ "$cancel_key" != '?' ] || cancel_key=''
+  [ "$filter_key" != '?' ] || filter_key=''
 }
 
-header_text() {
-  local h keys labels filter NL=$'\n' DIM=$'\033[90m' OFF=$'\033[0m'
-  filter="$(picker_filter)"
-  keys='enter: jump'
+filter_menu() {
+  local active="$1" mode sep='filter: '
+  for mode in all agents agents-and-subagents non-agents; do
+    printf '%s' "$sep"
+    if [ "$mode" = "$active" ]; then
+      printf '\033[1m%s\033[0m' "$mode"
+    else
+      printf '\033[90m%s\033[0m' "$mode"
+    fi
+    sep=' - '
+  done
+}
+
+picker_key_hints() {
+  local keys='enter: jump'
   [ -n "$filter_key" ] && keys="$keys  |  $filter_key: filter"
   [ -n "$kill_key" ] && keys="$keys  |  $kill_key: kill pane"
   [ -n "$cancel_key" ] && keys="$keys  |  $cancel_key: quit"
-  # ANSI in --header is rendered directly by fzf (no --ansi needed). Only
-  # the reference keys are dimmed, not the explanation or column labels.
-  h="${DIM}${keys}${OFF}${NL}panes: $filter | attention first, then recent activity | ordinary before subagents"
-  if ! tmux list-sessions >/dev/null 2>&1; then
-    h="${DIM}${keys}${OFF}${NL}No panes: no sessions on this tmux server."
-  fi
-  labels="$(list_rows header "$filter")"
-  if [ -n "$labels" ]; then
-    h="$h$NL$NL$labels"
+  printf '\033[90m%s\033[0m' "$keys"
+}
+
+header_text() {
+  local h labels filter NL=$'\n'
+  filter="${1-$(picker_filter)}"
+  # Listing callers get all four lines; the live UI separates optional help.
+  h="$(picker_key_hints)${NL}$(filter_menu "$filter")"
+  if [ "$#" -ge 2 ]; then
+    labels="$2"
+  elif tmux list-sessions >/dev/null 2>&1; then
+    labels="$(list_rows header "$filter")"
   else
-    # Command substitution strips trailing newlines, so retain a spacer.
-    h="$h$NL "
+    labels='No panes: no sessions on this tmux server.'
   fi
-  printf '%s' "$h"
+  # The private diagnostic header always includes its key-hint line.
+  printf '%s\n \n%s' "$h" "${labels:- }"
 }
 
 # Sort keys: ordinary/subagent group, priority, activity, session name, numeric
@@ -118,7 +134,7 @@ header_text() {
 # still includes the window name; split windows retain the familiar w.p label.
 build_pane_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since
-  local eff act label kind group mode="${1:-list}"
+  local eff act label group mode="${1:-list}"
   while IFS="$TAB" read -r s_id s_name s_act w_id w_idx w_act w_name w_panes \
     p_id p_idx p_cmd p_path state since; do
     case "$s_name" in *subagents*) group=1 ;; *) group=0 ;; esac
@@ -126,11 +142,6 @@ build_pane_rows() {
     [ "$mode" != targets ] || [ "$group" -eq 0 ] || continue
     w_name="${w_name#x}"
     p_cmd="${p_cmd#x}"
-    case "$p_cmd" in
-      pi | claude | codex) kind=agents ;;
-      *) kind=non-agents ;;
-    esac
-    [ "$FILTER" = all ] || [ "$FILTER" = "$kind" ] || continue
     p_path="${p_path#x}"
     state="${state#x}"
     since="${since#x}"
@@ -173,9 +184,9 @@ align_pane_rows() {
   command -v column >/dev/null 2>&1 && has_column=1
   [ "$has_column" -eq 1 ] || [ "$mode" != header ] || return 0
   all="${TAB}${TAB}session${TAB}pane${TAB}command${TAB}path${TAB}${TAB}${NL}${rows}"
-  # Carry the original session name alongside the aligned text. Decorate only
-  # that prefix AFTER column measures it, including names containing spaces.
-  # Reset with SGR 0: fzf 0.40 ignores SGR 22 and would dim the remaining columns.
+  # Carry the session name alongside the aligned text to classify the row.
+  # Dim the entire visible row AFTER alignment, including the icon gutter,
+  # while keeping navigation IDs unstyled. Reset attributes before those IDs.
   paste <(cut -f1,2 <<<"$all") \
     <(cut -f3-6 <<<"$all" |
       if [ "$has_column" -eq 1 ]; then
@@ -186,13 +197,17 @@ align_pane_rows() {
           printf "%s%s", sep, $i; sep = " "
         }; printf "\n" }'
       fi) <(cut -f3,7,8 <<<"$all") |
-    awk -F "$TAB" -v mode="$mode" -v gutter="${GUTTER:-0}" -v dim=$'\033[2m' -v off=$'\033[0m' '
-      NR == 1 { if (mode == "header") printf "%*s%s\n", gutter, "", $3; next }
+    awk -F "$TAB" -v mode="$mode" -v gutter="${GUTTER:-0}" -v columns="$has_column" -v dim=$'\033[2m' -v off=$'\033[0m' '
+      NR == 1 {
+        if (mode == "header" || mode == "frame") {
+          if (columns) printf "%*s%s\n", gutter, "", $3; else print ""
+        }
+        next
+      }
       mode != "header" {
-        text = $3
-        if (index($4, "subagents"))
-          text = dim substr(text, 1, length($4)) off substr(text, length($4) + 1)
-        print $1 "\t" (gutter > 0 ? $2 "\t" : "") text "\t" $5 "\t" $6
+        text = (gutter > 0 ? $2 "\t" : "") $3
+        if (index($4, "subagents")) text = dim text off
+        print $1 "\t" text "\t" $5 "\t" $6
       }'
 }
 
@@ -205,9 +220,23 @@ ranked_rows() {
   NOW="$(date +%s)"
   rows="$(tmux list-panes -a -F "$LIST_FMT")" || return 1
   [ -n "$rows" ] || return 0
-  printf '%s\n' "$rows" | build_pane_rows "${2:-list}" |
+  printf '%s\n' "$rows" | rank_pane_rows "${2:-list}"
+}
+
+# FILTER/TIMEOUT/NOW/icons belong to the caller's snapshot. Resolve linked
+# membership before view filtering, so an ordinary non-agent cannot reappear
+# as a subagent merely because its window also belongs to a subagent session.
+rank_pane_rows() {
+  build_pane_rows "${1:-list}" |
     LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3nr -k4,4 -k5,5n -k6,6n -k7,7 |
-    awk -F "$TAB" '!seen[$7]++' | cut -f7-
+    awk -F "$TAB" -v filter="$FILTER" -v mode="${1:-list}" '
+      !seen[$7]++ {
+        agent = ($11 == "pi" || $11 == "claude" || $11 == "codex")
+        if (mode == "targets" || filter == "all" ||
+            (filter == "agents" && $1 == 0 && agent) ||
+            (filter == "agents-and-subagents" && ($1 == 1 || agent)) ||
+            (filter == "non-agents" && $1 == 0 && !agent)) print
+      }' | cut -f7-
 }
 
 # Fzf rows are "pane-id TAB display TAB session-id TAB window-id". Linked
@@ -251,8 +280,36 @@ pane_target() {
 }
 
 kill_target() {
+  # Confirmation may outlive its server. Never kill a reused ID after restart.
+  live_server_matches "$LIVE_SERVER" || return 1
   tmux kill-pane -t "$1"
 }
+
+if [ "${1:-}" = --live-refresh ]; then
+  [ "$#" -ge 2 ] && [ "$#" -le 3 ] || exit 1
+  shift
+  live_refresh "$@" || printf 'rebind(every(1))\n'
+  exit 0
+elif [ "${1:-}" = --live-help ]; then
+  [ "$#" -eq 2 ] && [ -d "$2" ] || exit 1
+  if [ -f "$2/help" ]; then
+    rm -f "$2/help"
+  else
+    : > "$2/help"
+    picker_keys
+    picker_key_hints
+  fi
+  exit 0
+elif [ "${1:-}" = --live-publish ]; then
+  [ "$#" -eq 3 ] || exit 1
+  live_publish "$2" "$3"
+  exit "$?"
+elif [ "${1:-}" = --live-action ]; then
+  [ "$#" -ge 3 ] && [ -r "$2/server" ] || exit 1
+  LIVE_SERVER="$(<"$2/server")"
+  live_server_matches "$LIVE_SERVER" || exit 1
+  shift 2
+fi
 
 case "${1:-}" in
   --list | --header | --cycle-filter)
@@ -327,41 +384,11 @@ if [ "${1:-}" = --jump ]; then
 fi
 attention_require fzf || exit 1
 attention_require_terminal || exit 1
+if ! fzf_live_supported; then
+  printf 'tmux-attention: pane picker requires fzf >= 0.73 (live refresh with stable pane selection)\n' >&2
+  exit 1
+fi
 if tmux list-sessions >/dev/null 2>&1; then
   ensure_server_hooks || exit 1
 fi
-
-picker_keys
-I_BLOCKED="$(state_icon blocked)" I_FAILED="$(state_icon failed)" I_DONE="$(state_icon done)"
-I_UNKNOWN="$(state_icon unknown)" I_WORKING="$(state_icon working)" I_IDLE="$(state_icon idle)"
-GUTTER="$(icon_gutter)"
-# The input is already ranked. Queries must only filter, never promote a
-# fuzzy-match score over attention priority or activity.
-fzf_args=(--ansi --reverse --no-sort --no-tac --no-multi --prompt 'panes > '
-  --delimiter "$TAB" --with-nth '2..-3' --header "$(header_text)")
-[ "$GUTTER" -gt 0 ] && fzf_args+=(--tabstop "$GUTTER")
-callback="$(attention_shell_quote "$SELF")"
-if [ -n "$filter_key" ]; then
-  # Persist synchronously before reloading. No row placeholder: this must work
-  # even with zero matches. Reload keeps the query and fixed attention order.
-  fzf_args+=(--bind "$filter_key:execute-silent($callback --cycle-filter)+reload($callback --list)+transform-header($callback --header)")
-fi
-if [ -n "$kill_key" ]; then
-  # Killing may change table widths; recompute both the rows and their labels.
-  fzf_args+=(--bind "$kill_key:execute($callback --kill-confirm {1})+reload($callback --list)+transform-header($callback --header)")
-fi
-[ -z "$cancel_key" ] || fzf_args+=(--bind "$cancel_key:abort")
-
-selection="$(list_rows | fzf "${fzf_args[@]}")"
-rc=$?
-case "$rc" in
-  0) ;;
-  1 | 130) exit 0 ;; # no match or user abort
-  *) exit "$rc" ;;
-esac
-[ -n "$selection" ] || exit 0
-# This runs outside command substitution: attach inherits the real terminal.
-window="${selection##*"$TAB"}"
-row="${selection%"$TAB"*}"
-session="${row##*"$TAB"}"
-jump "${selection%%"$TAB"*}" "$session" "$window"
+live_picker

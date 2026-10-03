@@ -10,15 +10,16 @@ notifying pane clears its notification automatically.
 - **Immediately usable** — no plugin manager, setup command, or theme required.
 - **Tool-agnostic** — record states from agent hooks or wrap a shell command.
 - **Optional tmux UI** — place icons in your existing theme and define your own bindings.
-- **No daemon or state files** — state lives in tmux pane options and dies with
+- **No daemon or persistent state files** — state lives in tmux pane options and dies with
   the pane/server.
 
 ## Install
 
-Requires Bash ≥ 3.2 and tmux ≥ 3.3. Interactive navigation also requires
-[fzf](https://github.com/junegunn/fzf) ≥ 0.40 (≥ 0.48 for the default directory
-walker). `column` is optional for aligning the panes table. Direct directory
-entry, `jump`, state commands, and `run` do not need fzf.
+Requires Bash ≥ 3.2 and tmux ≥ 3.3. The live pane picker requires
+[fzf](https://github.com/junegunn/fzf) ≥ 0.73. Session/directory navigation needs
+fzf ≥ 0.40 with a custom directory source, or ≥ 0.48 for the default walker.
+`column` is optional for aligning the panes table. Direct directory entry,
+`jump`, state commands, and `run` do not need fzf.
 
 ### Mise
 
@@ -161,8 +162,9 @@ navigation-only: it has no kill action.
 A flat table shows each pane's session, pane label, command, and path on the
 selected server. **Ordinary sessions come first**, followed by **subagent
 sessions**: names containing the case-sensitive substring `subagents`, such as
-`pi-subagents` or `review-subagents`. Subagent session names are dimmed, but
-attention icons are unchanged. All panes remain expanded, without divider rows.
+`pi-subagents` or `review-subagents`. Entire subagent rows are dimmed, including
+attention icons, pane labels, commands, and paths. All panes remain expanded,
+without divider rows.
 
 Within each group, panes are ordered by attention priority:
 failed → blocked → done → unknown → working → idle → untracked.
@@ -175,28 +177,50 @@ Fuzzy search filters without reordering. Search and the keys below apply to
 both groups; an empty group reserves no space. Grouping does not change native
 attention indicators or the session/directory picker.
 
+- **?** — show/hide keybinds without changing the query; hints start hidden.
+  A muted reminder sits at the right of the filter row. `?` is reserved for help.
+  Narrow terminals shorten the hint and, if needed, show only the active filter.
 - **enter** — jump to the selected pane.
-- **shift-tab** — cycle **all panes → agent panes → non-agent panes → all panes**.
+- **shift-tab** — cycle **all → agents → agents-and-subagents → non-agents → all**.
 - **K** — confirm killing the selected pane; only `y`/`Y` kills. The target is
   always that pane, even in a single-pane window. Its empty window or session
   may close as a consequence.
 
-The header shows the active pane filter. Agent panes are those whose current
-command is exactly `pi`, `claude`, or `codex`, regardless of attention state;
-every other command is non-agent. This is a lightweight heuristic: an agent
-shown as `node`, `bash`, or `ssh` is not detected through its child processes.
-This command filter is independent of the session-name-based subagent grouping.
-Cycling preserves your search query and within-group ordering, even when a filter
-has no matches. The choice is shared across clients on the same tmux server
-and remembered across picker openings (including after cancel), starting at
-**all panes** on a fresh server. It does not affect the session/directory picker
-or the direct `jump` command.
+The header lists `filter: all - agents - agents-and-subagents - non-agents`,
+with the active view bold and inactive views muted:
+
+- **all** — every pane.
+- **agents** — ordinary panes running exactly `pi`, `claude`, or `codex`.
+- **agents-and-subagents** — those ordinary agents plus every subagent pane,
+  including shells and other commands in subagent sessions.
+- **non-agents** — ordinary panes running any other command.
+
+Linked panes are classified through their ordinary membership before filtering.
+Agent detection uses only the foreground command, not attention state, title,
+or child processes: an ordinary pane showing `node`, `bash`, or `ssh` is not
+classified as an agent. Cycling preserves the query and within-group ordering,
+even with no matches. The choice is shared live across open pickers and remembered
+for this server (including after cancel), starting at **all**. It does not affect
+the session/directory picker or direct `jump`.
+
+While open, the pane picker checks for changes about once per second. Attention
+states (including stale work), pane/session creation, removal and renames,
+commands, paths and the shared filter update without reopening. Rows and column
+labels refresh together; the query and selected pane ID survive reordering.
+Activity-only changes that leave the table unchanged do not reload it, avoiding
+periodic flicker. If that pane disappears or no longer matches, selection moves
+to a remaining match. Kill confirmation keeps its captured pane target, even as
+other work changes. A disconnected/replaced server closes the picker rather than
+following reused pane IDs. Refresh work stops on accept/cancel; there is no
+background daemon.
+The icon tabstop is fixed for each opening; reopen after configuring wider icons.
+The session/directory picker remains a snapshot and does not repeat directory walks.
 
 In both pickers, **ctrl-c / esc** quits back to the terminal and movement stays
 fzf's own, including **ctrl-n/ctrl-p** and **ctrl-j/ctrl-k**. There is no tree,
-expansion, view cycling, or sort switching. Session/pane selections and popup
-directory selections preserve the invoking pane; directory selections from a
-pane shell follow the cleanup rule above.
+expansion, session/pane view switching, or sort switching. Session/pane selections
+and popup directory selections preserve the invoking pane; directory selections
+from a pane shell follow the cleanup rule above.
 
 ### Immediate attention jump: `tmux-attention jump`
 
@@ -204,7 +228,7 @@ Skip the picker and focus the highest-ranked **ordinary pane**, using the same
 attention priority, stale-state handling, recency, and stable tie-breaks as the
 pane picker. Panes accessible only through subagent sessions are excluded;
 linked panes remain eligible through any ordinary session they belong to.
-The saved all/agents/non-agents filter is ignored and left unchanged. Current,
+The saved pane filter is ignored and left unchanged. Current,
 idle, and untracked ordinary panes remain eligible; this is not a next-pane
 cycle or a notifications-only command.
 

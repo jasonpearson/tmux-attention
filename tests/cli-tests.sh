@@ -27,8 +27,12 @@ assert_contains 'help advertises the pane command' "$("$BIN" help)" 'tmux-attent
 assert_contains 'help advertises the jump command' "$("$BIN" help)" 'tmux-attention jump'
 assert_eq 'help lists jump as a public action' \
   "$("$BIN" help | grep -Ec '^  jump[[:space:]]')" 1
-assert_eq 'help no longer advertises view cycling' \
-  "$("$BIN" help | grep -c 'Shift-tab')" 0
+assert_contains 'help advertises four-way filtering' \
+  "$("$BIN" help)" 'Shift-tab cycles all, agents,'
+assert_eq 'help no longer advertises session/pane view cycling' \
+  "$("$BIN" help | grep -c 'Shift-tab cycles views')" 0
+assert_contains 'help advertises initially hidden key hints' \
+  "$("$BIN" help)" '? toggles key hints (initially hidden)'
 "$BIN" panes >/dev/null 2>&1
 assert_eq 'pane picker without a terminal fails' "$?" 1
 assert_contains 'pane picker without a terminal prints usage' \

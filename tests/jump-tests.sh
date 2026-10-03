@@ -305,7 +305,7 @@ WRAPPER
     "$jump_source" "$jump_source_session" "$jump_source_window"
   J set -pu -t "$jump_source" @attention_state
 
-  for jump_filter in agents non-agents all '' invalid; do
+  for jump_filter in all agents agents-and-subagents non-agents '' invalid; do
     jump_home
     J set -g @attention_picker_filter "$jump_filter"
     jump_command=node
@@ -314,7 +314,7 @@ WRAPPER
     J set -p -t "$jump_a0" @attention_state failed
     jump_before="$(J show-options -gq @attention_picker_filter)"
     case "$jump_filter" in
-      agents | non-agents)
+      agents | agents-and-subagents | non-agents)
         assert_eq "remembered $jump_filter picker filter actually excludes the jump target" \
           "$(jump_inside bash "$PICKER" --list | cut -f1 | grep -Fxc "$jump_a0")" 0
         ;;
@@ -407,7 +407,7 @@ WRAPPER
   # The same pane belongs to two ordinary sessions and a much newer subagent
   # session. Use the best ORDINARY context, even when a command filter hides it.
   J link-window -s "$jump_bw" -t "$jump_sub_session:9" -d
-  for jump_filter in agents non-agents; do
+  for jump_filter in agents agents-and-subagents non-agents; do
     jump_home
     jump_command=node
     [ "$jump_filter" != non-agents ] || jump_command=pi

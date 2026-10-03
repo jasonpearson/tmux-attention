@@ -1,6 +1,76 @@
 #!/usr/bin/env bash
 # Sourced by terminal-tests.sh; uses its real-PTY driver and isolated sockets.
 # Run alone with: bash tests/terminal-tests.sh --filter-only
+
+# Every mode name stays visible. Decode the rendered attributes instead of
+# accepting a substring such as "filter: agents" as evidence of a completed
+# transition. Check the whole filter-menu line: only the active token is
+# bold, inactive names use muted SGR 90 like the hints, and no description remains.
+# capture-pane may combine SGR codes or use 22 to represent a reset.
+pane_filter_wait_mode() {
+  local mode="$1" n
+  for ((n=0; n<100; n++)); do
+    if D capture-pane -pe -t "$PANE" | awk -v mode="$mode" -v esc="$(printf '\033')" '
+      BEGIN { menu = "filter: all - agents - agents-and-subagents - non-agents" }
+      {
+        plain = ""; attrs = ""; colors = ""; bold = 0; muted = 0
+        for (i = 1; i <= length($0); i++) {
+          c = substr($0, i, 1)
+          if (c == esc && substr($0, i + 1, 1) == "[") {
+            tail = substr($0, i + 2)
+            if (match(tail, /^[0-9;]*m/)) {
+              codes = substr(tail, 1, RLENGTH - 1)
+              count = split(codes, code, ";")
+              if (codes == "") { bold = 0; muted = 0 }
+              for (j = 1; j <= count; j++) {
+                if (code[j] == 38 || code[j] == 48 || code[j] == 58) {
+                  if (code[j] == 38) muted = (code[j + 1] == 5 && code[j + 2] == 8)
+                  if (code[j + 1] == 5) j += 2
+                  else if (code[j + 1] == 2) j += 4
+                } else if (code[j] == 0) { bold = 0; muted = 0 }
+                else if (code[j] == 22) bold = 0
+                else if (code[j] == 1) bold = 1
+                else if (code[j] >= 30 && code[j] <= 39 || code[j] >= 90 && code[j] <= 97)
+                  muted = (code[j] == 90)
+              }
+              i += RLENGTH + 1
+              continue
+            }
+          }
+          plain = plain c; attrs = attrs bold; colors = colors muted
+        }
+        pos = index(plain, menu)
+        trimmed = plain; sub(/^[[:space:]]+/, "", trimmed); sub(/[[:space:]]+$/, "", trimmed)
+        if (index(trimmed, menu) == 1 && trimmed ~ /\? (to (show|hide) keybinds|help|hide)$/) {
+          count = split("all agents agents-and-subagents non-agents", modes, " ")
+          start = pos + length("filter: ")
+          for (j = 1; j <= count; j++) {
+            if (modes[j] == mode) break
+            start += length(modes[j]) + length(" - ")
+          }
+          good = (j <= count)
+          for (i = pos; i < pos + length(menu); i++) {
+            expected = (i >= start && i < start + length(mode)) ? 1 : 0
+            if (substr(attrs, i, 1) != expected) good = 0
+          }
+          start = pos + length("filter: ")
+          for (j = 1; j <= count; j++) {
+            for (i = start; i < start + length(modes[j]); i++)
+              if (substr(colors, i, 1) != (modes[j] != mode)) good = 0
+            start += length(modes[j]) + length(" - ")
+          }
+          if (good) found = 1
+        }
+        previous = plain
+      }
+      END { exit !found }
+    '; then return 0; fi
+    sleep 0.05
+  done
+  D capture-pane -pe -t "$PANE" >&2 || true
+  fail "four-view menu did not mark $mode bold and other views muted"
+}
+
 pane_filter_terminal_tests() {
   local PANE i pane sibling window mode query fresh
   local paths commands states panes
@@ -18,7 +88,7 @@ pane_filter_terminal_tests() {
   wait_screen 'panes >'
   wait_matches 0
   query=''
-  for i in 1 2 3; do
+  for i in 1 2 3 4; do
     D send-keys -t "$PANE" BTab
     D send-keys -t "$PANE" -l "$i"
     query="$query$i"
@@ -76,20 +146,25 @@ WRAPPER
   # tracked shells, prefixes, suffixes, case variants, and paths do not.
   launch panes
   D resize-window -t "$PANE" -x 240
-  wait_screen 'panes: all | attention first, then recent activity'
+  pane_filter_wait_mode all
+  wait_screen_absent 'enter: jump'
+  D send-keys -t "$PANE" -l '?'
+  wait_screen 'enter: jump  |  shift-tab: filter  |  K: kill pane  |  ctrl-c: quit'
+  D send-keys -t "$PANE" -l '?'
+  wait_screen_absent 'enter: jump'
   wait_matches 10
   D send-keys -t "$PANE" -l FILTERPROBE
   wait_screen 'panes > FILTERPROBE'
   wait_matches 10
   wait_screen_order "${paths[1]}" "${paths[0]}" "${paths[2]}" "${paths[3]}" "${paths[8]}"
-  for mode in agents non-agents all; do
+  for mode in agents agents-and-subagents non-agents all; do
     D send-keys -t "$PANE" BTab
-    wait_screen "panes: $mode | attention first, then recent activity"
+    pane_filter_wait_mode "$mode"
     wait_screen 'panes > FILTERPROBE'
     [ "$(T show-options -gqv @attention_picker_filter)" = "$mode" ] ||
       fail "filter key did not persist $mode server-globally"
     case "$mode" in
-      agents)
+      agents | agents-and-subagents)
         wait_matches 4
         wait_screen_order "${paths[1]}" "${paths[0]}" "${paths[3]}" "${paths[8]}"
         for i in 2 4 5 6 7; do wait_screen_absent "${paths[$i]}"; done
@@ -110,14 +185,14 @@ WRAPPER
 
   # Abort/reopen keeps the mode, but not a process-local copy of the query.
   D send-keys -t "$PANE" BTab
-  wait_screen 'panes: agents | attention first, then recent activity'
+  pane_filter_wait_mode agents
   wait_matches 4
   D send-keys -t "$PANE" Escape
   wait_result 0
   [ "$(T show-options -gqv @attention_picker_filter)" = agents ] || fail 'abort forgot the pane filter'
   launch panes
   D resize-window -t "$PANE" -x 240
-  wait_screen 'panes: agents | attention first, then recent activity'
+  pane_filter_wait_mode agents
   wait_matches 4
   wait_screen_order "${paths[1]}" "${paths[0]}" "${paths[3]}" "${paths[8]}"
 
@@ -137,7 +212,7 @@ WRAPPER
   wait_screen '[y/N]'
   D send-keys -t "$PANE" y
   wait_pane_closed "${panes[3]}"
-  wait_screen 'panes: agents | attention first, then recent activity'
+  pane_filter_wait_mode agents
   wait_screen 'panes > FILTERPROBE-working-agent'
   wait_matches 0
   pane_exists "$sibling" || fail 'filtered kill removed its sibling'
@@ -148,12 +223,17 @@ WRAPPER
   wait_screen_order "${paths[1]}" "${paths[0]}" "${paths[8]}"
   D send-keys -t "$PANE" -l FILTERPROBE-working-agent
   wait_matches 0
-  for mode in non-agents all; do
+  for mode in agents-and-subagents non-agents all; do
     D send-keys -t "$PANE" BTab
-    wait_screen "panes: $mode | attention first, then recent activity"
+    pane_filter_wait_mode "$mode"
     wait_screen 'panes > FILTERPROBE-working-agent'
-    wait_matches 1
-    wait_screen rr-FILTERPROBE-working-agent-sibling
+    if [ "$mode" = agents-and-subagents ]; then
+      wait_matches 0
+      wait_screen_absent rr-FILTERPROBE-working-agent-sibling
+    else
+      wait_matches 1
+      wait_screen rr-FILTERPROBE-working-agent-sibling
+    fi
   done
   # Selection after callbacks also detects stdout contaminating the selection
   # protocol, and proves that the wrapper retained real navigation IDs.
@@ -176,7 +256,7 @@ WRAPPER
     fi
     launch panes
     D resize-window -t "$PANE" -x 240
-    wait_screen 'panes: all | attention first, then recent activity'
+    pane_filter_wait_mode all
     wait_matches 9
     D send-keys -t "$PANE" -l FILTERPROBE
     wait_matches 9
@@ -184,7 +264,7 @@ WRAPPER
     D send-keys -t "$PANE" -l NOMATCH
     wait_screen 'panes > FILTERPROBENOMATCH'
     wait_matches 0
-    wait_screen 'panes: all | attention first, then recent activity'
+    pane_filter_wait_mode all
     [ "$(T show-options -gqv @attention_picker_filter)" = all ] ||
       fail "$mode filter key left shift-tab bound"
     if [ "$mode" = custom ]; then
@@ -192,7 +272,7 @@ WRAPPER
       D send-keys -t "$PANE" -l FILTERPROBE
       wait_matches 9
       D send-keys -t "$PANE" C-f
-      wait_screen 'panes: agents | attention first, then recent activity'
+      pane_filter_wait_mode agents
       wait_screen 'panes > FILTERPROBE'
       wait_matches 3
       wait_screen_order "${paths[1]}" "${paths[0]}" "${paths[8]}"
@@ -211,10 +291,10 @@ WRAPPER
       T set -g @attention_picker_filter invalid-filter
     fi
     launch panes
-    wait_screen 'panes: all | attention first, then recent activity'
+    pane_filter_wait_mode all
     wait_matches 9
     D send-keys -t "$PANE" BTab
-    wait_screen 'panes: agents | attention first, then recent activity'
+    pane_filter_wait_mode agents
     wait_matches 3
     [ "$(T show-options -gqv @attention_picker_filter)" = agents ] || fail "$mode filter did not cycle from all"
     D send-keys -t "$PANE" Escape
@@ -227,28 +307,35 @@ WRAPPER
   fresh="$(T -f "$WORK/tmux.conf" new-session -d -s filter-empty -P -F '#{pane_id}' 'sleep 300')"
   T set -p -t "$fresh" @test_filter_command bash
   launch panes
-  wait_screen 'panes: all | attention first, then recent activity'
+  pane_filter_wait_mode all
   wait_matches 1
-  for mode in agents non-agents all agents; do
+  for mode in agents agents-and-subagents non-agents all agents; do
     D send-keys -t "$PANE" BTab
-    wait_screen "panes: $mode | attention first, then recent activity"
-    if [ "$mode" = agents ]; then wait_matches 0; else wait_matches 1; fi
+    pane_filter_wait_mode "$mode"
+    case "$mode" in
+      agents | agents-and-subagents) wait_matches 0 ;;
+      *) wait_matches 1; wait_screen filter-empty ;;
+    esac
     [ "$(T show-options -gqv @attention_picker_filter)" = "$mode" ] || fail 'empty-list cycling lost its mode'
   done
   D send-keys -t "$PANE" Escape
   wait_result 0
   launch panes
-  wait_screen 'panes: agents | attention first, then recent activity'
+  pane_filter_wait_mode agents
   wait_matches 0
   D send-keys -t "$PANE" BTab
-  wait_screen 'panes: non-agents | attention first, then recent activity'
+  pane_filter_wait_mode agents-and-subagents
+  wait_matches 0
+  D send-keys -t "$PANE" BTab
+  pane_filter_wait_mode non-agents
   wait_matches 1
+  wait_screen filter-empty
   D send-keys -t "$PANE" Escape
   wait_result 0
 
   stop_target_server
   mv "$WORK/tmux-before-filter" "$WORK/bin/tmux"
-  printf 'PASS: real-terminal pane filters, exact agent commands, query/ranking, persistence, keys, kill reload, and cold/empty cycling\n'
+  printf 'PASS: real-terminal four-view pane filters/menu attributes, exact agent commands, query/ranking, persistence, keys, kill reload, and cold/empty cycling\n'
 }
 pane_filter_terminal_tests
-unset -f pane_filter_terminal_tests
+unset -f pane_filter_terminal_tests pane_filter_wait_mode

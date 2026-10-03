@@ -11,7 +11,8 @@ subagent_pane_tests() {
   local sg_alpha sg_beta sg_a0 sg_a1 sg_a2 sg_a10 sg_b0 sg_aw sg_bw
   local sg_linked sg_linked_window sg_old sg_old_session
   local sg_new sg_new_session sg_sub sg_sub_session sg_filter_expected sg_command
-  local sg_dim=$'\033[2m' sg_off=$'\033[0m' sg_tab=$'\t'
+  local sg_nonagent sg_nonagent_window sg_catalog sg_all_width sg_filtered_width sg_victim
+  local sg_dim=$'\033[2m' sg_off=$'\033[0m' sg_tab=$'\t' sg_bold=$'\033[1m'
   sg_bin="$sg_root/bin"
   sg_plain_path="$sg_root/no-column"
   mkdir -p "$sg_bin" "$sg_plain_path"
@@ -45,12 +46,32 @@ WRAPPER
   sg_path="$sg_bin:$PATH"
   sg_inside() { env TMUX="$sg_socket,0,0" TMUX_PANE="$sg_seed" PATH="$sg_path" "$@"; }
   sg_list() { sg_inside bash "$PICKER" --list; }
-  sg_strip() { # Only the approved name-local SGR sequences are removed.
+  sg_strip() { # Only the approved row-local SGR sequences are removed.
     local text="$1"
     text="${text//"$sg_dim"/}"
     printf '%s' "${text//"$sg_off"/}"
   }
   sg_fixture_ids() { cut -f1 | awk -v ids="$sg_rank_ids " 'index(ids," "$0" ")'; }
+  sg_filter_metadata() { # Real metadata in the unfiltered, deduplicated row order.
+    local row id sid wid
+    while IFS= read -r row; do
+      id="$(printf '%s\n' "$row" | cut -f1)"
+      sid="$(printf '%s\n' "$row" | awk -F '\t' '{print $(NF-1)}')"
+      wid="$(printf '%s\n' "$row" | awk -F '\t' '{print $NF}')"
+      SG display-message -p -t "$sid:$wid.$id" \
+        "#{pane_id}${sg_tab}#{session_name}${sg_tab}x#{@sg_test_command}"
+    done
+  }
+  sg_expected_filter() {
+    printf '%s\n' "$sg_catalog" | awk -F '\t' -v mode="$1" '{
+      subagent = index($2, "subagents") > 0
+      command = substr($3, 2)
+      agent = (command == "pi" || command == "claude" || command == "codex")
+      if (mode == "all" || (mode == "agents" && !subagent && agent) ||
+          (mode == "agents-and-subagents" && (subagent || agent)) ||
+          (mode == "non-agents" && !subagent && !agent)) print $1
+    }'
+  }
   sg_reset() {
     while IFS= read -r sg_session; do
       [ "$sg_session" = "$sg_seed_session" ] || SG kill-session -t "$sg_session"
@@ -63,17 +84,17 @@ WRAPPER
       sid="$(printf '%s\n' "$row" | awk -F '\t' '{print $(NF-1)}')"
       wid="$(printf '%s\n' "$row" | awk -F '\t' '{print $NF}')"
       name="$(SG display-message -p -t "$sid:$wid.$id" '#{session_name}')"
-      text="$(printf '%s\n' "$row" | cut -f"$field")"
+      text="$(printf '%s\n' "$row" | cut -f"2-$field")"
       plain="$(sg_strip "$text")"
       case "$name" in
-        *subagents*) expected="$sg_dim$name$sg_off${plain#"$name"}" ;;
+        *subagents*) expected="$sg_dim$plain$sg_off" ;;
         *) expected="$plain" ;;
       esac
-      prefix="$(sg_strip "$row" | cut -f"1-$((field - 1))")"
+      prefix="$(sg_strip "$row" | cut -f1)"
       suffix="$(sg_strip "$row" | cut -f"$((field + 1))-")"
-      assert_eq "$desc: only session '$name' is dimmed ($id)" \
+      assert_eq "$desc: entire visible subagent row is dimmed, IDs unstyled ($name $id)" \
         "$row" "$prefix$sg_tab$expected$sg_tab$suffix"
-      # Any reset/bold/color code or a dim spilling into other fields fails.
+      # Extra resets/colors, partial dimming, or styling hidden IDs fails.
       assert_eq "$desc: no other ANSI escapes in row $id" \
         "$(sg_strip "$row" | LC_ALL=C tr -cd '\033')" ''
     done <<<"$rows"
@@ -109,15 +130,15 @@ WRAPPER
     "$(printf '%s\n' "$sg_rows" | cut -f1 | LC_ALL=C sort)" \
     "$(SG list-panes -a -F '#{pane_id}' | LC_ALL=C sort)"
   sg_assert_style 'grouped picker exact SGR 2/0 bytes' "$sg_rows" 3
-  assert_eq 'subagent icons keep the ordinary failed icon bytes without dimming' \
-    "$(printf '%s\n' "$sg_rows" | awk -F '\t' -v ids="$sg_subagents " 'index(ids," "$1" ") {print $2}' | LC_ALL=C sort -u)" '☠️'
+  assert_eq 'subagent failed icons are dimmed with the rest of the row' \
+    "$(printf '%s\n' "$sg_rows" | awk -F '\t' -v ids="$sg_subagents " 'index(ids," "$1" ") {print $2}' | LC_ALL=C sort -u)" "${sg_dim}☠️"
   sg_header="$(sg_inside bash "$PICKER" --header)"
   assert_eq 'rendering grouped rows and header never installs formats/icons/filter' "$(SG show-options -g)" "$sg_options"
   assert_eq 'rendering grouped rows and header never installs hooks' "$(SG show-hooks -g)" "$sg_hooks"
   assert_eq 'rendering grouped rows and header never rewrites states or timestamps' \
     "$(SG list-panes -a -F '#{pane_id}|#{@attention_state}|#{@attention_since}')" "$sg_states"
 
-  # Compare visual positions after removing just the two name-local SGR codes.
+  # Compare visual positions after removing just the two row-local SGR codes.
   if command -v column >/dev/null 2>&1; then
     sg_header="$(printf '%s\n' "$sg_header" | sed -n 4p)"
     sg_header="${sg_header#"${sg_header%%[! ]*}"}"
@@ -139,14 +160,14 @@ WRAPPER
   assert_eq 'renaming an ordinary session into the subagent group moves its pane last' \
     "$(printf '%s\n' "$sg_rows" | tail -1 | cut -f1)" "$sg_upper"
   sg_row="$(printf '%s\n' "$sg_rows" | awk -F '\t' -v id="$sg_upper" '$1 == id')"
-  assert_contains 'rename into subagents immediately dims the session name' "$sg_row" \
-    "$sg_dim"'later-subagents-renamed'"$sg_off"
+  assert_contains 'rename into subagents retains the new session name' "$sg_row" 'later-subagents-renamed'
+  sg_assert_style 'rename into subagents immediately dims the whole row' "$sg_row" 3
   SG rename-session -t "$sg_upper_session" 'A ordinary renamed'
   sg_rows="$(sg_list)"
   assert_eq 'renaming out of subagents immediately restores ordinary stable order' \
     "$(printf '%s\n' "$sg_rows" | head -1 | cut -f1)" "$sg_upper"
   sg_row="$(printf '%s\n' "$sg_rows" | awk -F '\t' -v id="$sg_upper" '$1 == id')"
-  assert_eq 'renaming out of subagents removes all session dim bytes' \
+  assert_eq 'renaming out of subagents removes all row dim bytes' \
     "$(printf '%s' "$sg_row" | LC_ALL=C tr -cd '\033')" ''
 
   # Exercise the same names through no-column and completely iconless paths.
@@ -168,10 +189,10 @@ WRAPPER
         sg_header="${sg_header#"${sg_header%%[! ]*}"}"
         while IFS= read -r sg_row; do
           sg_text="$(sg_strip "$(printf '%s\n' "$sg_row" | cut -f"$sg_ids")")"
-          assert_eq "column $sg_mode keeps pane labels aligned after session dimming" \
+          assert_eq "column $sg_mode keeps pane labels aligned after row dimming" \
             "$(awk -v s="$sg_text" 'BEGIN {print index(s,"0:")}')" \
             "$(awk -v s="$sg_header" 'BEGIN {print index(s,"pane")}')"
-          assert_eq "column $sg_mode keeps commands aligned after session dimming" \
+          assert_eq "column $sg_mode keeps commands aligned after row dimming" \
             "$(awk -v s="$sg_text" 'BEGIN {print index(s,"node")}')" \
             "$(awk -v s="$sg_header" 'BEGIN {print index(s,"command")}')"
         done <<<"$sg_rows"
@@ -187,8 +208,10 @@ WRAPPER
         sg_window="$(SG display-message -p -t "$sg_pane" '#{window_name}')"
         sg_plain="$(SG display-message -p -t "$sg_pane" '#{pane_current_path}')"
         case "$sg_plain" in "$HOME") sg_plain='~' ;; "$HOME"/*) sg_plain="~${sg_plain#"$HOME"}" ;; esac
-        assert_eq "no-column $sg_mode uses a single-space join without dimming other fields" \
-          "$sg_text" "${sg_dim}subagents${sg_off} 0:$sg_window node $sg_plain"
+        sg_expected="subagents 0:$sg_window node $sg_plain${sg_off}"
+        [ "$sg_mode" != iconless ] || sg_expected="$sg_dim$sg_expected"
+        assert_eq "no-column $sg_mode dims the whole single-space-joined row" \
+          "$sg_text" "$sg_expected"
       fi
     done
   done
@@ -224,7 +247,7 @@ WRAPPER
     assert_eq "$sg_prefix grouped stale pane keeps its stored state and timestamp" \
       "$(SG display-message -p -t "$sg_stale" '#{@attention_state}|#{@attention_since}')" "working|$sg_since"
     assert_eq "$sg_prefix grouped stale pane keeps its native unknown icon" \
-      "$(sg_list | awk -F '\t' -v id="$sg_stale" '$1 == id {print $2}')" '❓'
+      "$(sg_strip "$(sg_list | awk -F '\t' -v id="$sg_stale" '$1 == id {print $2}')")" '❓'
     SG set -gu @attention_stale_timeout
     sg_reset
 
@@ -263,7 +286,7 @@ $sg_b0"
   # ordinary contexts use the same activity/stable ranking as unlinked rows.
   sg_old="$(SG new-session -d -P -F '#{pane_id}' -s 'A ordinary linked' 'exec sleep 600')"
   sg_new="$(SG new-session -d -P -F '#{pane_id}' -s 'Z ordinary linked' 'exec sleep 600')"
-  sg_sub="$(SG new-session -d -P -F '#{pane_id}' -s 'newest-subagents' 'exec sleep 600')"
+  sg_sub="$(SG new-session -d -P -F '#{pane_id}' -s 'newest-subagents-longest-session-name-for-filter-alignment' 'exec sleep 600')"
   sg_old_session="$(SG display-message -p -t "$sg_old" '#{session_id}')"
   sg_new_session="$(SG display-message -p -t "$sg_new" '#{session_id}')"
   sg_sub_session="$(SG display-message -p -t "$sg_sub" '#{session_id}')"
@@ -289,32 +312,72 @@ $sg_b0"
   assert_eq 'equal-ranked linked ordinary contexts retain stable session-name tie-break' \
     "$(sg_list | awk -F '\t' -v id="$sg_linked" '$1 == id {print $(NF-1)}')" "$sg_old_session"
 
-  # Every command filter is an order-preserving subsequence of the grouped list,
-  # including linked agents, subagent non-agents and exact command matching.
+  # Filtering follows ordinary-first deduplication. A linked ordinary non-agent
+  # must not reappear through its newer subagent membership in the mixed mode.
+  sg_nonagent="$sg_new"
+  sg_nonagent_window="$(SG display-message -p -t "$sg_nonagent" '#{window_id}')"
+  SG link-window -s "$sg_nonagent_window" -t "$sg_sub_session:10" -d
+  SG set -p -t "$sg_nonagent" @sg_test_command node
   SG set -p -t "$sg_linked" @sg_test_command pi
   SG set -p -t "$sg_sub" @sg_test_command Pi
   for sg_prefix in ordinary subagents; do
     if [ "$sg_prefix" = ordinary ]; then sg_session="$sg_new_session"; else sg_session="$sg_sub_session"; fi
-    for sg_command in claude codex node; do
+    for sg_command in pi claude codex node '' 'pi --agent'; do
       sg_pane="$(SG new-window -d -t "$sg_session:" -P -F '#{pane_id}' 'exec sleep 600')"
       SG set -p -t "$sg_pane" @sg_test_command "$sg_command"
       SG set -p -t "$sg_pane" @attention_state working
     done
   done
   sg_rows="$(sg_list)"
-  for sg_filter in all agents non-agents; do
+  sg_catalog="$(printf '%s\n' "$sg_rows" | sg_filter_metadata)"
+  sg_states="$(SG list-panes -a -F '#{pane_id}|#{@attention_state}|#{@attention_since}')"
+  sg_header="$(sg_inside bash "$PICKER" --header | sed -n 4p)"
+  sg_all_width="$(awk -v s="$sg_header" 'BEGIN {print index(s,"pane")}')"
+  for sg_filter in all agents agents-and-subagents non-agents; do
     SG set -g @attention_picker_filter "$sg_filter"
-    sg_filter_expected="$(printf '%s\n' "$sg_rows" | awk -F '\t' -v mode="$sg_filter" '{
-      agent = ($3 ~ / (pi|claude|codex) +/)
-      if (mode == "all" || (mode == "agents" && agent) || (mode == "non-agents" && !agent)) print $1
-    }')"
-    assert_eq "$sg_filter command filter applies to both groups without changing order or duplicating links" \
-      "$(sg_list | cut -f1)" "$sg_filter_expected"
-    assert_contains "$sg_filter header describes the same command filter as the grouped list" \
-      "$(sg_inside bash "$PICKER" --header)" "panes: $sg_filter |"
+    sg_filter_expected="$(sg_expected_filter "$sg_filter")"
+    for sg_mode in column no-column; do
+      if [ "$sg_mode" = no-column ]; then
+        sg_rows="$(sg_inside env PATH="$sg_plain_path" bash "$PICKER" --list)"
+      else
+        sg_rows="$(sg_list)"
+      fi
+      assert_eq "$sg_mode $sg_filter is the exact post-dedup subsequence, preserving both group orders" \
+        "$(printf '%s\n' "$sg_rows" | cut -f1)" "$sg_filter_expected"
+      sg_assert_style "$sg_mode $sg_filter styling" "$sg_rows" 3
+    done
+    sg_header="$(sg_inside bash "$PICKER" --header)"
+    assert_contains "$sg_filter header bolds the active token" \
+      "$(printf '%s\n' "$sg_header" | sed -n 2p)" "$sg_bold$sg_filter$sg_off"
+    assert_eq "$sg_filter header lists all modes without ranking/group prose" \
+      "$(printf '%s\n' "$sg_header" | sed -n 2p | sed $'s/\033\\[[0-9;]*m//g')" \
+      'filter: all - agents - agents-and-subagents - non-agents'
+    case "$sg_filter" in
+      all | non-agents)
+        sg_row="$(sg_list | awk -F '\t' -v id="$sg_nonagent" '$1 == id')"
+        assert_eq "$sg_filter retains the linked non-agent in its ordinary context" \
+          "$(printf '%s\n' "$sg_row" | awk -F '\t' '{print $(NF-1) ":" $NF}')" \
+          "$sg_new_session:$sg_nonagent_window"
+        ;;
+      agents | agents-and-subagents)
+        assert_eq "$sg_filter cannot admit a linked ordinary non-agent via a subagent membership" \
+          "$(sg_list | cut -f1 | grep -Fxc "$sg_nonagent")" 0
+        ;;
+    esac
+    if command -v column >/dev/null 2>&1; then
+      case "$sg_filter" in
+        agents | non-agents)
+          sg_filtered_width="$(printf '%s\n' "$sg_header" | awk 'NR == 4 {print index($0,"pane")}')"
+          assert_eq "$sg_filter excludes long subagent names BEFORE column alignment" \
+            "$([ "$sg_filtered_width" -lt "$sg_all_width" ] && echo narrower)" narrower
+          ;;
+      esac
+    fi
     assert_eq "$sg_filter grouped rendering preserves the saved command filter" \
       "$(SG show-options -gqv @attention_picker_filter)" "$sg_filter"
   done
+  assert_eq 'all four filters leave attention states and timestamps untouched' \
+    "$(SG list-panes -a -F '#{pane_id}|#{@attention_state}|#{@attention_since}')" "$sg_states"
   SG set -gu @attention_picker_filter
 
   SG rename-session -t "$sg_old_session" 'subagents former A'
@@ -325,10 +388,38 @@ $sg_b0"
     "$(printf '%s\n' "$sg_rows" | cut -f1 | grep -Fxc "$sg_linked")" 1
   assert_eq 'subagent-only linked pane chooses its highest-ranked subagent context' \
     "$(printf '%s\n' "$sg_row" | awk -F '\t' '{print $(NF-1) ":" $NF}')" "$sg_sub_session:$sg_linked_window"
-  assert_contains 'subagent-only linked pane dims its winning session label' \
-    "$sg_row" "${sg_dim}newest-subagents${sg_off}"
+  sg_assert_style 'subagent-only linked pane dims its whole winning row' "$sg_row" 3
+  sg_catalog="$(printf '%s\n' "$sg_rows" | sg_filter_metadata)"
+  for sg_filter in all agents agents-and-subagents non-agents; do
+    SG set -g @attention_picker_filter "$sg_filter"
+    assert_eq "$sg_filter immediately reclassifies formerly ordinary linked panes after rename" \
+      "$(sg_list | cut -f1)" "$(sg_expected_filter "$sg_filter")"
+  done
+  SG set -g @attention_picker_filter agents
+  assert_eq 'agents is empty when all agent panes become subagent-only' "$(sg_list)" ''
+  SG set -g @attention_picker_filter non-agents
+  assert_eq 'non-agents excludes every subagent-only command, leaving just the ordinary seed' \
+    "$(sg_list | cut -f1)" "$sg_seed"
+  SG set -g @attention_picker_filter agents-and-subagents
+  assert_eq 'linked non-agent enters mixed mode only after losing its last ordinary membership' \
+    "$(sg_list | cut -f1 | grep -Fxc "$sg_nonagent")" 1
   SG rename-session -t "$sg_old_session" 'A ordinary linked'
   SG rename-session -t "$sg_new_session" 'Z ordinary linked'
+  assert_eq 'renaming back immediately hides the ordinary linked non-agent in mixed mode' \
+    "$(sg_list | cut -f1 | grep -Fxc "$sg_nonagent")" 0
+
+  # Reloads after killing a subagent shell retain mixed-mode membership/order.
+  sg_victim="$(SG new-window -d -t "$sg_sub_session:" -P -F '#{pane_id}' 'exec sleep 600')"
+  SG set -p -t "$sg_victim" @sg_test_command bash
+  sg_rows="$(sg_list)"
+  assert_eq 'mixed mode includes a killable subagent shell' \
+    "$(printf '%s\n' "$sg_rows" | cut -f1 | grep -Fxc "$sg_victim")" 1
+  sg_inside bash "$PICKER" --kill "$sg_victim"
+  assert_eq 'mixed-mode kill reload removes only the selected pane without changing order' \
+    "$(sg_list | cut -f1)" "$(printf '%s\n' "$sg_rows" | cut -f1 | grep -Fvx "$sg_victim")"
+  assert_eq 'mixed-mode kill preserves the stored filter' \
+    "$(SG show-options -gqv @attention_picker_filter)" agents-and-subagents
+  SG set -gu @attention_picker_filter
 
   # Grouping belongs to navigation only; native aggregation must still include
   # subagent-only failed work, without dim escapes or reduced priority.
@@ -336,18 +427,23 @@ $sg_b0"
   SG set -p -t "$sg_linked" @attention_state idle
   SG set -p -t "$sg_sub" @attention_state failed
   SG set -g @attention_icon_failed 'F!'
-  for sg_mode in pane window session; do
-    assert_eq "subagent native $sg_mode icon is unchanged by picker grouping" \
-      "$(SG display-message -p -t "$sg_sub_session:.$sg_sub" "#{T:@attention_$sg_mode}")" 'F! '
+  for sg_filter in all agents agents-and-subagents non-agents; do
+    SG set -g @attention_picker_filter "$sg_filter"
+    for sg_mode in pane window session; do
+      assert_eq "$sg_filter leaves the subagent native $sg_mode icon unchanged" \
+        "$(SG display-message -p -t "$sg_sub_session:.$sg_sub" "#{T:@attention_$sg_mode}")" 'F! '
+    done
+    assert_eq "$sg_filter leaves subagent-only failed work in the native global aggregate" \
+      "$(SG display-message -p -t "$sg_seed" '#{T:@attention_global}')" 'F! '
   done
-  assert_eq 'native global aggregate still includes subagent-only failed work' \
-    "$(SG display-message -p -t "$sg_seed" '#{T:@attention_global}')" 'F! '
-  assert_eq 'grouped picker keeps live failed icon overrides undimmed' \
-    "$(sg_list | awk -F '\t' -v id="$sg_sub" '$1 == id {print $2}')" 'F!'
+  SG set -gu @attention_picker_filter
+  assert_eq 'grouped picker dims live failed icon overrides with the row' \
+    "$(sg_list | awk -F '\t' -v id="$sg_sub" '$1 == id {print $2}')" "${sg_dim}F!"
 
   sg_cleanup
   eval "$sg_saved_trap"
-  unset -f SG sg_cleanup sg_inside sg_list sg_strip sg_fixture_ids sg_reset sg_assert_style
+  unset -f SG sg_cleanup sg_inside sg_list sg_strip sg_fixture_ids sg_filter_metadata \
+    sg_expected_filter sg_reset sg_assert_style
 }
 
 subagent_pane_tests
