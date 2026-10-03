@@ -129,6 +129,38 @@ live_wait_clean() {
   fail 'live picker retained fzf or temporary refresh resources after cancel/attach'
 }
 
+# Capture before the failure trap destroys the isolated servers. A blank
+# terminal alone cannot distinguish a hang from an unexpected exit status or
+# a descendant retaining the PTY after the picker process has already exited.
+live_signal_diagnostics() {
+  local picker_pid="$1" fzf_pid tty pid
+  fzf_pid="$(<"$WORK/live-fzf-pid")"
+  {
+    printf 'signal diagnostics: Bash %s; picker PID=%s; fzf PID=%s\n' "$BASH_VERSION" "$picker_pid" "$fzf_pid"
+    D display-message -p -t "$PANE" 'tmux=#{version} pane=#{pane_id} tty=#{pane_tty} dead=#{pane_dead} status=#{pane_dead_status} signal=#{pane_dead_signal}' || true
+    printf 'Owned processes (PID/PPID/PGID/TPGID/STAT/COMMAND):\n'
+    ps -p "$picker_pid,$fzf_pid" -o pid,ppid,pgid,tpgid,stat,comm || true
+    tty="$(D display-message -p -t "$PANE" '#{pane_tty}')" || tty=''
+    if [ -n "$tty" ]; then
+      printf 'Processes on the isolated pane terminal %s:\n' "$tty"
+      ps -t "$tty" -o pid,ppid,pgid,tpgid,stat,comm || true
+    fi
+    for pid in "$picker_pid" "$fzf_pid"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        printf 'PID %s still exists\n' "$pid"
+      else
+        printf 'PID %s no longer exists\n' "$pid"
+      fi
+      if [ -r "/proc/$pid/status" ]; then
+        grep -E '^(State|PPid|Threads|SigPnd|ShdPnd|SigBlk|SigIgn|SigCgt):' "/proc/$pid/status" || true
+        printf 'wait channel: '; cat "/proc/$pid/wchan" 2>/dev/null || true; printf '\n'
+      fi
+    done
+    printf 'Remaining private refresh resources:\n'
+    find "$WORK/live-tmp" -mindepth 1 -print || true
+  } >&2
+}
+
 # Count real production reads (the fixture's T calls bypass the wrapper).
 # Let initial load/setup settle, then require several COMPLETED periodic raw
 # samples without any icon lookups. Those happen on every formatting pass,
@@ -236,7 +268,7 @@ live_picker_terminal_tests() {
   local TARGET="${TARGET}-live" PANE real_fzf alpha beta gamma pane i mode
   local linked linked_window parking since steady aging kill_pane sibling window
   local before n old_tmpdir="${TMPDIR-}" commands paths panes
-  local original_ids replacement_ids original_pid empty_pid replacement picker_pid sig status
+  local original_ids replacement_ids original_pid empty_pid replacement picker_pid sig status pane_exit
   real_fzf="$(command -v fzf)"
   cp "$WORK/bin/tmux" "$WORK/tmux-before-live"
   {
@@ -590,10 +622,14 @@ live_picker_terminal_tests() {
     kill -s "$sig" "$picker_pid"
     case "$sig" in TERM) status=143 ;; HUP) status=129 ;; esac
     for ((n=0; n<100; n++)); do
-      [ "$(D display-message -p -t "$PANE" '#{pane_dead}:#{pane_dead_status}')" != "1:$status" ] || break
+      pane_exit="$(D display-message -p -t "$PANE" '#{pane_dead}:#{pane_dead_status}')" || pane_exit=unavailable
+      [ "$pane_exit" != "1:$status" ] || break
       sleep 0.05
     done
-    [ "$n" -lt 100 ] || fail "PID-directed $sig did not terminate the picker promptly"
+    if [ "$n" -eq 100 ]; then
+      live_signal_diagnostics "$picker_pid"
+      fail "PID-directed $sig: expected dead:status=1:$status within 100 polls, got $pane_exit"
+    fi
     live_wait_clean
     pane_exists "$pane" || fail "PID-directed $sig changed the target pane"
   done
