@@ -173,8 +173,10 @@ navigation-only: it has no kill action.
 
 A flat table shows each pane's session, pane label, command, and path on the
 selected server. **Ordinary sessions come first**, followed by **subagent
-sessions**: names containing the case-sensitive substring `subagents`, such as
-`pi-subagents` or `review-subagents`. Entire subagent rows are dimmed, including
+sessions**: by default, names containing the case-sensitive substring `subagents`,
+such as `pi-subagents` or `review-subagents`. Customize this with
+`subagent_session_patterns` in the [config file](#cli-preferences).
+Entire subagent rows are dimmed, including
 attention icons, pane labels, commands, and paths. All panes remain expanded,
 without divider rows.
 
@@ -202,15 +204,16 @@ The header lists `filter: all - agents - agents-and-subagents - non-agents`,
 with the active view bold and inactive views muted:
 
 - **all** — every pane.
-- **agents** — ordinary panes running exactly `pi`, `claude`, or `codex`.
+- **agents** — ordinary panes running a command in `agent_commands`; defaults
+  are exactly `pi`, `claude`, or `codex`.
 - **agents-and-subagents** — those ordinary agents plus every subagent pane,
   including shells and other commands in subagent sessions.
 - **non-agents** — ordinary panes running any other command.
 
 Linked panes are classified through their ordinary membership before filtering.
 Agent detection uses only the foreground command, not attention state, title,
-or child processes: an ordinary pane showing `node`, `bash`, or `ssh` is not
-classified as an agent. Cycling preserves the query and within-group ordering,
+or child processes: by default, an ordinary pane showing `node`, `bash`, or `ssh`
+is not classified as an agent. Cycling preserves the query and within-group ordering,
 even with no matches. The choice is shared live across open pickers and remembered
 for this server (including after cancel), starting at **all**. It does not affect
 the session/directory picker or direct `jump`.
@@ -288,41 +291,87 @@ There is no setup command; `init` is an ordinary directory name. Internal
 
 ## CLI preferences
 
-Environment variables work identically with or without a running server.
-Unset means default; explicitly empty values are preserved. All defaults:
+Optionally create `~/.config/tmux-attention/config` (or
+`$XDG_CONFIG_HOME/tmux-attention/config` when `XDG_CONFIG_HOME` is nonempty).
+It is a **trusted Bash file**, not INI or TOML: sourcing it can execute commands.
+No file is required, and omitted settings retain their built-in defaults.
+All defaults:
 
-```sh
-export TMUX_ATTENTION_DIR_ROOT="$HOME"
-export TMUX_ATTENTION_DIR_HIDDEN='on'
-export TMUX_ATTENTION_DIR_SKIP='.git,node_modules,Library,.cache,.Trash,.local,.npm,.cargo,.rustup,.gradle,.m2,.venv,venv,__pycache__,target,dist,build,.next'
-export TMUX_ATTENTION_DIR_COMMAND=''
+```bash
+agent_commands=(pi claude codex)
+subagent_session_patterns=('*subagents*')
 
-export TMUX_ATTENTION_PICKER_KILL_KEY='K'
-export TMUX_ATTENTION_PICKER_CANCEL_KEY='ctrl-c'
-export TMUX_ATTENTION_PICKER_FILTER_KEY='shift-tab'
+dir_root="$HOME"
+dir_hidden='on'
+dir_skip='.git,node_modules,Library,.cache,.Trash,.local,.npm,.cargo,.rustup,.gradle,.m2,.venv,venv,__pycache__,target,dist,build,.next'
+dir_command=''
+
+picker_kill_key='K'
+picker_cancel_key='ctrl-c'
+picker_filter_key='shift-tab'
 ```
 
-`PICKER_KILL_KEY` and `PICKER_FILTER_KEY` apply only to `panes`;
-`PICKER_CANCEL_KEY` applies to both pickers. An empty key disables that
+`agent_commands` matches exact, case-sensitive **pane command names**.
+`subagent_session_patterns` matches case-sensitive Bash globs against whole
+**session names**; quote patterns to avoid filesystem expansion. Any matching
+pattern marks a session as subagent. These rules apply consistently to pane
+filtering, grouping, dimming, and `jump`'s subagent exclusions. They do not change
+attention state, native icons, or the session/directory picker.
+
+Arrays **replace** defaults. For example:
+
+```bash
+agent_commands=(pi claude codex aider goose)
+subagent_session_patterns=('*subagents*' 'workers-*')
+```
+
+`agent_commands=()` recognizes no agents; `subagent_session_patterns=()` treats
+all sessions as ordinary. To extend defaults explicitly, Bash `+=` also works:
+`agent_commands+=(aider)`.
+
+Existing environment variables override the corresponding config values,
+including explicitly empty overrides:
+
+| Config setting | Environment override |
+| --- | --- |
+| `dir_root` | `TMUX_ATTENTION_DIR_ROOT` |
+| `dir_hidden` | `TMUX_ATTENTION_DIR_HIDDEN` |
+| `dir_skip` | `TMUX_ATTENTION_DIR_SKIP` |
+| `dir_command` | `TMUX_ATTENTION_DIR_COMMAND` |
+| `picker_kill_key` | `TMUX_ATTENTION_PICKER_KILL_KEY` |
+| `picker_cancel_key` | `TMUX_ATTENTION_PICKER_CANCEL_KEY` |
+| `picker_filter_key` | `TMUX_ATTENTION_PICKER_FILTER_KEY` |
+
+The two classification arrays are config-file-only. Preferences work with or
+without a running server. Navigation reads the file once per invocation;
+**reopen a picker after editing it**. Live callbacks reuse the opening's config
+without executing the file again. Help, version, state commands, `run`, and
+seen hooks do not load it. Invalid Bash or a nonzero config return aborts
+navigation with an error; config stdout is redirected to stderr so it cannot
+corrupt picker rows. Keep this file limited to assignments.
+
+`picker_kill_key` and `picker_filter_key` apply only to `panes`;
+`picker_cancel_key` applies to both pickers. An empty key disables that
 configured binding; esc remains fzf's abort.
-`DIR_HIDDEN=off` excludes dotted directories. `DIR_SKIP` lists single path
+`dir_hidden=off` excludes dotted directories. `dir_skip` lists single path
 components; empty means skip nothing. The walker never follows symlinks.
-Narrowing `DIR_ROOT` to a projects directory is the simplest performance
+Narrowing `dir_root` to a projects directory is the simplest performance
 improvement.
 
-`DIR_COMMAND` replaces the walker with a shell command producing one directory
+`dir_command` replaces the walker with a shell command producing one directory
 per line. Then root/hidden/skip no longer apply and fzf 0.40 is sufficient.
-For zoxide with mise:
+Set `dir_command='zoxide query --list'` in the config, or use mise:
 
 ```toml
 [env]
 TMUX_ATTENTION_DIR_COMMAND = "zoxide query --list"
 ```
 
-Or export that variable in your shell rc. Preferences are read from the
-environment at each CLI invocation. A tmux popup inherits tmux's environment,
-not your interactive shell's; use the mise shim or `mise exec` in your binding
-to load mise-defined preferences at invocation time (see below).
+Or export that variable in your shell rc. A tmux popup inherits tmux's environment,
+not your interactive shell's. The config file avoids needing to export preferences
+into tmux (ensure it sees the same `HOME`/`XDG_CONFIG_HOME`). For mise-defined
+environment overrides, use the mise shim or `mise exec` in your binding to load
+them at invocation time (see below).
 
 ## Optional tmux UI
 

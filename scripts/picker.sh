@@ -14,6 +14,16 @@
 CURRENT_DIR="$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 source "$CURRENT_DIR/helpers.sh"
+source "$CURRENT_DIR/config.sh"
+case "${1:-}" in
+  --live-*)
+    # Only our private frame directory supplies callback configuration. Do not
+    # rerun the user's Bash config on every timer/help/action invocation.
+    [ -r "${2:-}/config" ] || exit 1
+    source "$2/config" || exit 1
+    ;;
+  *) attention_load_config || exit 1 ;;
+esac
 SELF="$CURRENT_DIR/picker.sh"
 # Source-only: live callbacks and version checks never run during listing/jump.
 source "$CURRENT_DIR/picker-live.sh"
@@ -81,9 +91,9 @@ cycle_filter() {
 }
 
 picker_keys() {
-  kill_key="$(attention_env TMUX_ATTENTION_PICKER_KILL_KEY K)"
-  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
-  filter_key="$(attention_env TMUX_ATTENTION_PICKER_FILTER_KEY shift-tab)"
+  kill_key="$(attention_env TMUX_ATTENTION_PICKER_KILL_KEY)"
+  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY)"
+  filter_key="$(attention_env TMUX_ATTENTION_PICKER_FILTER_KEY)"
   # Help owns ?, so neither bind nor advertise a conflicting action.
   [ "$kill_key" != '?' ] || kill_key=''
   [ "$cancel_key" != '?' ] || cancel_key=''
@@ -134,10 +144,11 @@ header_text() {
 # still includes the window name; split windows retain the familiar w.p label.
 build_pane_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since
-  local eff act label group mode="${1:-list}"
+  local eff act label group agent mode="${1:-list}"
   while IFS="$TAB" read -r s_id s_name s_act w_id w_idx w_act w_name w_panes \
     p_id p_idx p_cmd p_path state since; do
-    case "$s_name" in *subagents*) group=1 ;; *) group=0 ;; esac
+    group=0
+    if attention_is_subagent "$s_name"; then group=1; fi
     # Direct jumps ignore subagent contexts, not the pane's other memberships.
     [ "$mode" != targets ] || [ "$group" -eq 0 ] || continue
     w_name="${w_name#x}"
@@ -163,14 +174,16 @@ build_pane_rows() {
     else
       label="${w_idx}.${p_idx}"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(icon_for "$eff")" "$s_name" "$label" "$p_cmd" "$(shorten_path "$p_path")" "$s_id" "$w_id"
+    agent=0
+    if attention_is_agent "$p_cmd"; then agent=1; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(icon_for "$eff")" "$s_name" "$label" "$p_cmd" "$(shorten_path "$p_path")" "$s_id" "$w_id" "$group" "$agent"
   done
 }
 
 # stdin: id TAB icon TAB session TAB label TAB command TAB path
-#        TAB session-id TAB window-id. The final two fields stay hidden from
-# fzf's display/search, but preserve the row's context for linked-window jumps.
+#        TAB session-id TAB window-id TAB group. Group is consumed by styling;
+# session/window IDs stay hidden in fzf and preserve linked-window context.
 # column(1) aligns only near-ASCII text. The icon's own tab-delimited field is
 # expanded by fzf using --tabstop, keeping emoji and iconless rows in step.
 # Empty text fields hold a space so column cannot merge delimiters. Without
@@ -183,8 +196,8 @@ align_pane_rows() {
   [ -n "$rows" ] || return 0
   command -v column >/dev/null 2>&1 && has_column=1
   [ "$has_column" -eq 1 ] || [ "$mode" != header ] || return 0
-  all="${TAB}${TAB}session${TAB}pane${TAB}command${TAB}path${TAB}${TAB}${NL}${rows}"
-  # Carry the session name alongside the aligned text to classify the row.
+  all="${TAB}${TAB}session${TAB}pane${TAB}command${TAB}path${TAB}${TAB}${TAB}${NL}${rows}"
+  # Carry the already-resolved group alongside the aligned text.
   # Dim the entire visible row AFTER alignment, including the icon gutter,
   # while keeping navigation IDs unstyled. Reset attributes before those IDs.
   paste <(cut -f1,2 <<<"$all") \
@@ -196,7 +209,7 @@ align_pane_rows() {
         awk -F "$TAB" '{ sep = ""; for (i = 1; i <= NF; i++) if ($i != "") {
           printf "%s%s", sep, $i; sep = " "
         }; printf "\n" }'
-      fi) <(cut -f3,7,8 <<<"$all") |
+      fi) <(awk -F "$TAB" -v OFS="$TAB" '{print $9, $7, $8}' <<<"$all") |
     awk -F "$TAB" -v mode="$mode" -v gutter="${GUTTER:-0}" -v columns="$has_column" -v dim=$'\033[2m' -v off=$'\033[0m' '
       NR == 1 {
         if (mode == "header" || mode == "frame") {
@@ -206,7 +219,7 @@ align_pane_rows() {
       }
       mode != "header" {
         text = (gutter > 0 ? $2 "\t" : "") $3
-        if (index($4, "subagents")) text = dim text off
+        if ($4 == 1) text = dim text off
         print $1 "\t" text "\t" $5 "\t" $6
       }'
 }
@@ -231,12 +244,12 @@ rank_pane_rows() {
     LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3nr -k4,4 -k5,5n -k6,6n -k7,7 |
     awk -F "$TAB" -v filter="$FILTER" -v mode="${1:-list}" '
       !seen[$7]++ {
-        agent = ($11 == "pi" || $11 == "claude" || $11 == "codex")
+        agent = ($16 == 1)
         if (mode == "targets" || filter == "all" ||
             (filter == "agents" && $1 == 0 && agent) ||
             (filter == "agents-and-subagents" && ($1 == 1 || agent)) ||
             (filter == "non-agents" && $1 == 0 && !agent)) print
-      }' | cut -f7-
+      }' | cut -f7-15
 }
 
 # Fzf rows are "pane-id TAB display TAB session-id TAB window-id". Linked

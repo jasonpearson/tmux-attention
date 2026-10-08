@@ -10,7 +10,8 @@ PICKER="$DIR/scripts/picker.sh"
 NEWSESSION="$DIR/scripts/new-session.sh"
 SOCK="attention-test-$$"
 TEST_TMP="$(cd "$(mktemp -d)" && pwd -P)"
-# Tests must not inherit a user's picker preferences (e.g. from mise).
+# Tests must not inherit a user's config or picker preferences (e.g. from mise).
+export XDG_CONFIG_HOME="$TEST_TMP/config"
 while IFS= read -r name; do unset "$name"; done < <(compgen -v TMUX_ATTENTION_)
 
 T() { command tmux -L "$SOCK" "$@"; }
@@ -345,6 +346,7 @@ source "$DIR/tests/pane-picker-tests.sh"
 source "$DIR/tests/subagent-pane-tests.sh"
 source "$DIR/tests/jump-tests.sh"
 source "$DIR/tests/launcher-tests.sh"
+source "$DIR/tests/config-tests.sh"
 
 # --- new session from a directory --------------------------------------------
 # Given a directory, new-session.sh never reaches fzf, so the whole

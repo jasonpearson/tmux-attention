@@ -40,7 +40,8 @@ usage: tmux-attention [directory]
 Navigation switches the client inside tmux and attaches outside it. The default
 picker lists sessions by recent activity, then directories in source order.
 Search filters without reordering. The panes picker lists ordinary sessions first,
-then sessions whose names contain lowercase "subagents", dimming entire rows.
+then subagent sessions, dimming entire rows. By default their names contain
+lowercase "subagents"; agent commands are exactly pi, claude, or codex.
 Each group keeps attention/recency order. Shift-tab cycles all, agents,
 agents-and-subagents, non-agents (remembered for this server); agents/non-agents
 include ordinary panes only. The active view is bold; inactive views are muted.
@@ -57,6 +58,11 @@ Popup directory selections, session/pane selections, failed navigation and
 same-session navigation leave the pane open.
 Bare invocation and panes require a terminal; otherwise usage and exit 1.
 Jump works headlessly inside tmux; outside, attaching requires a terminal.
+
+Optional trusted Bash config: ${XDG_CONFIG_HOME:-$HOME/.config}/tmux-attention/config.
+agent_commands=(pi claude codex) and subagent_session_patterns=('*subagents*')
+customize classification; empty arrays disable it. Existing TMUX_ATTENTION_*
+environment preferences override config values. Reopen pickers after editing.
 
 pane_id defaults to $TMUX_PANE. Outside tmux state commands are silent no-ops;
 run still executes its command and preserves its exit code. Seen-rule hooks and

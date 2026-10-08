@@ -162,6 +162,7 @@ live_picker() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  attention_config_snapshot > "$dir/config" || return 1
   : > "$dir/server"
   size="$(stty size 2>/dev/null)" || size='0 80'
   FZF_COLUMNS="${size##* }" live_refresh "$dir" initial || return 1

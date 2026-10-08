@@ -15,12 +15,12 @@ attention_option() {
   fi
 }
 
-# CLI preferences are environment variables, not server options: they must
-# work before the first tmux server exists. Indirection is Bash 3.2 compatible;
-# unlike :-, the - fallback preserves an explicitly empty value.
+# Environment overrides navigation config/defaults, including explicitly empty
+# values. Config is loaded by navigation callers, never by sourcing helpers.
+# Indirection and the unset-only fallback are Bash 3.2 compatible.
 attention_env() {
-  local name="$1" default="$2"
-  printf '%s' "${!name-$default}"
+  local name="$1" config="ATTENTION_CONFIG_${1#TMUX_ATTENTION_}" default="${2-}"
+  printf '%s' "${!name-${!config-$default}}"
 }
 
 attention_require() {

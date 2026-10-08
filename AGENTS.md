@@ -23,6 +23,8 @@ existing sessions and directories.
 - `scripts/helpers.sh` — shared functions; sourced, never executed.
   Environment/option access, automatic idempotent setup, state priorities,
   icons, and `effective_state` (the picker's stale downgrade).
+- `scripts/config.sh` — source-only navigation config loader, defaults, and
+  command/session classifiers; snapshots preferences for live callbacks.
 - `scripts/formats.sh` — native tmux format helpers; source-only with no
   side effects. Defines registration of `@attention_pane`, `@attention_window`,
   `@attention_session`, and `@attention_global`; themes consume them through
@@ -45,7 +47,8 @@ existing sessions and directories.
   launcher-tests.sh, jump-tests.sh, and terminal-tests.sh (real PTYs, including
   direct jumps, shell/popup cleanup, pane filtering, subagent grouping, live
   refresh/lifetime, and help-hint layout),
-  package-tests.sh, and optional isolated mise-tests.sh.
+  config-tests.sh/config-terminal-tests.sh (Bash config, overrides, classification,
+  and callback snapshots), package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
 ## Core model
@@ -149,12 +152,17 @@ existing sessions and directories.
   tmux's default-shell need not understand them.
 - `attention_option` and `attention_env` distinguish *set to empty* (disable an
   icon/key) from *unset* (default). Don't replace them with `${var:-default}`.
-- CLI/picker preferences use `TMUX_ATTENTION_*` environment variables, so cold
-  starts work. Keep directory-source settings; `TMUX_ATTENTION_PICKER_KILL_KEY`
-  and `TMUX_ATTENTION_PICKER_FILTER_KEY` apply only to panes, and
-  `TMUX_ATTENTION_PICKER_CANCEL_KEY` to both pickers.
-  Tmux options configure presentation or store runtime state; do not add a
-  parallel tmux-option configuration API for CLI preferences.
+- **Navigation config**: source trusted Bash at
+  `${XDG_CONFIG_HOME:-$HOME/.config}/tmux-attention/config` once per navigation
+  invocation; omitted settings retain defaults. Existing `TMUX_ATTENTION_*`
+  variables override lowercase scalar settings, preserving empty values.
+  `agent_commands` and `subagent_session_patterns` are config-only arrays:
+  replacement lists, empty disables classification. Live callbacks source a
+  private snapshot, not the user file; edits require reopening. Help/version,
+  state/run, seen hooks, and sourcing modules never load user config. Keep tests'
+  XDG roots isolated. Tmux options remain presentation/runtime state, not a
+  parallel CLI-preference configuration API. Kill/filter keys apply only to
+  panes; cancel applies to both pickers.
 - Outside tmux, valid CLI *state* commands exit 0 silently (`run` still executes
   its command and preserves its exit code). Navigation attaches outside tmux
   and switches inside. Never auto-create a server for help, browsing or abort.
@@ -180,7 +188,8 @@ existing sessions and directories.
   directory reuse stays exact-name-based, with no ownership model.
 - **Pane navigation**: `tmux-attention panes` lists each pane once in a flat
   session/pane/command/path table: ordinary sessions first, then sessions whose
-  names contain case-sensitive `subagents`. Within each group, order by attention
+  names match `subagent_session_patterns` (default `'*subagents*'`, case-sensitive
+  Bash globs). Within each group, order by attention
   priority, descending activity, then stable ties. Group BEFORE deduplicating:
   any ordinary membership wins for linked panes, retaining its highest-ranked
   ordinary context. Carry session/window IDs in hidden trailing fields for
@@ -202,7 +211,8 @@ existing sessions and directories.
   0 BEFORE setup or tty checks, without creating a server. Bindings stay user-owned.
 - **Pane filtering**: shift-tab cycles all → agents → agents-and-subagents →
   non-agents → all, preserving query and within-group order. Agents/non-agents
-  contain ordinary panes only; agents are exact `pi`/`claude`/`codex` commands.
+  contain ordinary panes only; agents match exact, case-sensitive `agent_commands`
+  entries (default `pi`/`claude`/`codex`).
   Agents-and-subagents adds EVERY subagent-only pane, including shells. Resolve
   ordinary linked membership BEFORE filtering; filtering precedes alignment.
   Persist these four tokens in global `@attention_picker_filter`; unset/invalid

@@ -18,6 +18,7 @@ REAL_TMUX="$(command -v tmux)"
 DRIVER="attention-terminal-driver-$$"
 TARGET="attention-terminal-target-$$"
 WORK="$(cd "$(mktemp -d)" && pwd -P)"
+export XDG_CONFIG_HOME="$WORK/config"
 D() { "$REAL_TMUX" -L "$DRIVER" "$@"; }
 T() { "$REAL_TMUX" -L "$TARGET" "$@"; }
 source "$ROOT/tests/tmux-lifecycle.sh"
@@ -228,6 +229,7 @@ launch() {
 # for the next suite's first-use assertions. Subagents uses its own fresh socket
 # so it never races a preceding suite's kill-server with new-session.
 case "${1:-}" in
+  --config-only) source "$ROOT/tests/config-terminal-tests.sh"; exit 0 ;;
   --enter-only) source "$ROOT/tests/pane-enter-terminal-tests.sh"; exit 0 ;;
   --help-only) source "$ROOT/tests/picker-help-terminal-tests.sh"; exit 0 ;;
   --live-only) source "$ROOT/tests/live-picker-terminal-tests.sh"; exit 0 ;;
@@ -236,6 +238,7 @@ case "${1:-}" in
   --filter-only) source "$ROOT/tests/pane-filter-terminal-tests.sh"; exit 0 ;;
   --cleanup-only) source "$ROOT/tests/picker-cleanup-tests.sh"; exit 0 ;;
 esac
+source "$ROOT/tests/config-terminal-tests.sh"
 source "$ROOT/tests/pane-enter-terminal-tests.sh"
 source "$ROOT/tests/picker-help-terminal-tests.sh"
 source "$ROOT/tests/live-picker-terminal-tests.sh"

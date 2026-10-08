@@ -15,13 +15,8 @@ CURRENT_DIR="$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 source "$CURRENT_DIR/helpers.sh"
 
-# Directory names the walk never descends into. fzf's own default is just
-# .git,node_modules; the rest are the caches and build outputs that dominate
-# a home directory and that nobody opens a session in. It is worth a lot: on
-# a real ~ this cuts the walk from 281k directories (~14s) to 29k (~1.2s),
-# and Library alone is most of that. Names only — fzf matches a single path
-# component, and multi-component patterns ("target/debug") need fzf 0.57.
-DEFAULT_SKIP='.git,node_modules,Library,.cache,.Trash,.local,.npm,.cargo,.rustup,.gradle,.m2,.venv,venv,__pycache__,target,dist,build,.next'
+source "$CURRENT_DIR/config.sh"
+attention_load_config || exit 1
 
 # Inside tmux the popup would swallow stderr as it closes; outside there is
 # no status line to write to.
@@ -64,9 +59,9 @@ fzf_walks() {
 # in — and TMUX_ATTENTION_DIR_HIDDEN turns them off.
 walker_args() {
   local root skip opts='dir'
-  root="$(expand_tilde "$(attention_env TMUX_ATTENTION_DIR_ROOT "$HOME")")"
-  skip="$(attention_env TMUX_ATTENTION_DIR_SKIP "$DEFAULT_SKIP")"
-  case "$(attention_env TMUX_ATTENTION_DIR_HIDDEN on)" in
+  root="$(expand_tilde "$(attention_env TMUX_ATTENTION_DIR_ROOT)")"
+  skip="$(attention_env TMUX_ATTENTION_DIR_SKIP)"
+  case "$(attention_env TMUX_ATTENTION_DIR_HIDDEN)" in
     off | false | 0) ;;
     *) opts='dir,hidden' ;;
   esac
@@ -80,7 +75,7 @@ walker_args() {
 # No view/sort/kill controls in the launcher. Esc always aborts as well.
 dir_header() {
   local cancel_key hints='enter: switch/create'
-  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
+  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY)"
   [ -n "$cancel_key" ] && hints="$hints  |  $cancel_key: quit"
   printf '%s\n ' "$hints"
 }
@@ -134,8 +129,8 @@ list_destinations() {
 # (or a directory it managed to emit). SIGPIPE is normal after an early pick.
 pick_destination() {
   local cmd cancel_key
-  cmd="$(attention_env TMUX_ATTENTION_DIR_COMMAND '')"
-  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY ctrl-c)"
+  cmd="$(attention_env TMUX_ATTENTION_DIR_COMMAND)"
+  cancel_key="$(attention_env TMUX_ATTENTION_PICKER_CANCEL_KEY)"
   if [ -z "$cmd" ] && ! fzf_walks; then
     msg 'directory picker needs fzf >= 0.48, or set TMUX_ATTENTION_DIR_COMMAND'
     return 2
@@ -232,7 +227,7 @@ if [ "${1:-}" = '--list-sessions' ]; then
 fi
 
 if [ "${1:-}" = '--list' ]; then
-  list_destinations "$(attention_env TMUX_ATTENTION_DIR_COMMAND '')"
+  list_destinations "$(attention_env TMUX_ATTENTION_DIR_COMMAND)"
   exit "$?"
 fi
 
