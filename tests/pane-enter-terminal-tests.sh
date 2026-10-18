@@ -46,7 +46,7 @@ pane_enter_terminal_tests() {
   wait_client_session enter-source
   invoke_inside panes
   wait_inside_screen 'panes >'
-  T send-keys -t "$TARGET_PANE" -l ENTERREFRESH
+  set_pane_query ENTERREFRESH
   wait_matches 2
   for ((n=0; n<100; n++)); do
     if D capture-pane -p -t "$PANE" | grep -Eq '^[[:space:]]*>.*ENTERREFRESH-selected'; then break; fi

@@ -69,6 +69,32 @@ wait_matches() {
   done
   fail "picker did not settle on $1 matches"
 }
+# Set a fixture query after opening/resizing a live pane picker. fzf deliberately
+# ignores ordinary input during ID-tracked reloads; the first prompt alone is
+# not a readiness barrier. Retry this idempotent setup, not the action under
+# test (Enter/kill/filter and query-preservation assertions still use raw keys).
+set_pane_query() {
+  local wanted="$1" n text line current
+  for ((n=0; n<100; n++)); do
+    text="$(D capture-pane -p -t "$PANE")"
+    current=''
+    while IFS= read -r line; do
+      case "$line" in
+        *'panes >'*)
+          current="${line#*panes >}"; current="${current# }"
+          current="${current%"${current##*[![:space:]]}"}" ;;
+      esac
+    done <<<"$text"
+    [ "$current" != "$wanted" ] || return 0
+    case "$text" in
+      *'+T*'*) ;; # A keyed reload is still holding the input guard.
+      *) D send-keys -t "$PANE" C-u; D send-keys -t "$PANE" -l "$wanted" ;;
+    esac
+    sleep 0.05
+  done
+  fail "pane picker did not accept setup query: $wanted"
+}
+
 # Assert visible row order, not just the selected item. Use unique row tokens
 # that do not occur in the query/header; retries allow fzf's next render.
 wait_screen_order() {
@@ -642,7 +668,7 @@ for context_mode in outside inside; do
   fi
   D resize-window -t "$PANE" -x 240
   wait_screen 'panes >'
-  D send-keys -t "$PANE" -l CTXPROBE
+  set_pane_query CTXPROBE
   wait_screen 'panes > CTXPROBE'
   wait_matches 1
   wait_screen 'a-linked-context'
