@@ -23,6 +23,9 @@ existing sessions and directories.
 - `scripts/helpers.sh` — shared functions; sourced, never executed.
   Environment/option access, automatic idempotent setup, state priorities,
   icons, and `effective_state` (the picker's stale downgrade).
+- `scripts/notify.sh` — source-only optional notification dispatch; reads tmux
+  presentation options, reserves per-pane duplicate suppression on the server,
+  and starts detached POSIX shell commands for accepted attention events.
 - `scripts/config.sh` — source-only navigation config loader, defaults, and
   command/session classifiers; snapshots preferences for live callbacks.
 - `scripts/formats.sh` — native tmux format helpers; source-only with no
@@ -48,7 +51,9 @@ existing sessions and directories.
   direct jumps, shell/popup cleanup, pane filtering, subagent grouping, live
   refresh/lifetime, and help-hint layout),
   config-tests.sh/config-terminal-tests.sh (Bash config, overrides, classification,
-  and callback snapshots), package-tests.sh, and optional isolated mise-tests.sh.
+  and callback snapshots), notification-tests.sh (isolated asynchronous jobs,
+  opt-in/focus modes, deduplication, quoting, failures and Bash 3.2),
+  package-tests.sh, and optional isolated mise-tests.sh.
   Safe beside real sessions: `bash tests/run-tests.sh`.
 
 ## Core model
@@ -135,6 +140,20 @@ existing sessions and directories.
   empty overrides; idle is intentionally empty by default. Icon changes must
   work before or after format registration. Unsetting an icon option restores
   its default on the next valid CLI use or plugin load.
+- **Optional notifications**: `@attention_notify` defaults to `off`; `unseen`
+  suppresses focused panes, `always` does not. Empty/invalid mode or empty/unset
+  `@attention_notify_command` is silent. Only accepted explicit blocked/done/failed
+  events (including `run`) dispatch, using the original event before the seen
+  rule's idle conversion. Never notify from setters, focus acknowledgements,
+  rendering, stale downgrades, setup, navigation, or manual `toggle`. Preserve the
+  blocked guard. `@attention_notify_last` is internal per-pane attempt history:
+  reserve it with a server-side compare/set before `run-shell -b` so concurrent
+  duplicates cannot race; explicit working/idle/unknown/clear/toggle rearm it,
+  while seen hooks do not. Jobs run POSIX `/bin/sh` under the server environment,
+  with `TMUX_ATTENTION_STATE` and canonical `TMUX_ATTENTION_PANE`; detach all
+  stdin/stdout/stderr and ignore failure without affecting state/run exit codes.
+  Treat the trusted command as literal shell code, not a tmux format. Never load
+  navigation config for notifications. Test with fake notifiers, never real audio.
 - Setup is idempotent. Check actual hook arrays on each valid state/navigation
   invocation or plugin load: repair handlers removed by a config reload even
   when our marker remains. Preserve unrelated hooks, use deterministic free

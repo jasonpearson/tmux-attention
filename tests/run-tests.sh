@@ -513,6 +513,14 @@ assert_contains 'no command without a tty prints usage' \
 # Additional acceptance cases share the isolated server and assertions above.
 source "$DIR/tests/directory-tests.sh"
 source "$DIR/tests/cli-tests.sh"
+for notification_bash in "$(type -P bash)" /bin/bash; do
+  [ -x "$notification_bash" ] || continue
+  if "$notification_bash" "$DIR/tests/notification-tests.sh"; then
+    ok "optional notification commands ($notification_bash)"
+  else
+    not_ok "optional notification commands ($notification_bash)" failed passed
+  fi
+done
 if bash "$DIR/tests/tmux-lifecycle-tests.sh"; then
   ok 'isolated tmux shutdown/restart barrier'
 else

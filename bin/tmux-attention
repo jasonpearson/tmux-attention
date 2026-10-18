@@ -10,6 +10,8 @@ done
 CURRENT_DIR="$(CDPATH= cd -P "$(dirname "$SOURCE")/.." && pwd)" || exit 1
 # shellcheck source=../scripts/helpers.sh
 source "$CURRENT_DIR/scripts/helpers.sh"
+# shellcheck source=../scripts/notify.sh
+source "$CURRENT_DIR/scripts/notify.sh"
 
 usage() {
   cat <<'EOF'
@@ -69,6 +71,11 @@ run still executes its command and preserves its exit code. Seen-rule hooks and
 native icon formats initialize automatically. Use #{T:@attention_session} (or
 pane/window/global) in your tmux theme; @attention_icon_<state> overrides an icon.
 No setup command is needed. Key bindings are configured directly in tmux.conf.
+Optional sound/notification commands: @attention_notify is off (default), unseen,
+or always; @attention_notify_command is a POSIX shell command (default empty).
+Blocked/done/failed events run it asynchronously with TMUX_ATTENTION_STATE and
+TMUX_ATTENTION_PANE. Repeated same-state notifications are suppressed until a
+new state, explicit working/idle/unknown/clear, or toggle rearms the pane.
 EOF
 }
 
@@ -80,15 +87,17 @@ usage_error() {
 
 # A notifying state applies the seen rule and preserves unanswered blocked.
 record() {
-  local pane="$1" state="$2"
+  local pane="$1" state="$2" focused=0
   if pane_focused "$pane"; then
+    focused=1
     set_pane_state "$pane" idle
-    return 0
+  else
+    if [ "$(pane_state "$pane")" = blocked ]; then
+      case "$state" in done | failed) return 0 ;; esac
+    fi
+    set_pane_state "$pane" "$state"
   fi
-  if [ "$(pane_state "$pane")" = blocked ]; then
-    case "$state" in done | failed) return 0 ;; esac
-  fi
-  set_pane_state "$pane" "$state"
+  attention_notify "$pane" "$state" "$focused"
 }
 
 cmd="${1:-}"
@@ -123,6 +132,7 @@ case "$cmd" in
       "$@"
       exit "$?"
     fi
+    attention_reset_notification "$pane"
     set_pane_state "$pane" working
     "$@"
     rc="$?"
@@ -136,6 +146,10 @@ case "$cmd" in
     [ -n "$pane" ] || exit 0
     tmux display-message -p -t "$pane" '' >/dev/null 2>&1 || exit 0
     ensure_server_hooks || exit 1
+    # Explicit progress/reset events rearm sound. Seen-rule idle writes do not.
+    case "$cmd" in
+      working | idle | unknown | clear | toggle) attention_reset_notification "$pane" ;;
+    esac
     case "$cmd" in
       working | idle | unknown) set_pane_state "$pane" "$cmd" ;;
       blocked | failed | done) record "$pane" "$cmd" ;;

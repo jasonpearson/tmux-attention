@@ -10,6 +10,7 @@ notifying pane clears its notification automatically.
 - **Immediately usable** — no plugin manager, setup command, or theme required.
 - **Tool-agnostic** — record states from agent hooks or wrap a shell command.
 - **Optional tmux UI** — place icons in your existing theme and define your own bindings.
+- **Optional sound/notifications** — run your own command for attention events; off by default.
 - **No daemon or persistent state files** — state lives in tmux pane options and dies with
   the pane/server.
 
@@ -139,12 +140,79 @@ Untracked panes do not contribute to aggregates. `clear` removes tracking;
 `idle` keeps it. Recording blocked/failed/done on a focused pane records idle
 instead; focusing a notifying pane also idles it. An unanswered blocked state
 is not overwritten by done/failed. `toggle` bypasses the seen rule for manual
-marking.
+marking. Accepted blocked/done/failed events can also run an optional
+[notification command](#optional-notifications-and-sound); sound does not change
+these state/seen rules.
 
 Seen-rule hooks and native tmux formats register automatically on valid
 state/navigation use. Neither CLI use nor plugin loading changes your theme or
 key bindings. `--help`, `--version`, and outside-tmux state no-ops do not set up
 hooks/formats or create a server.
+
+## Optional notifications and sound
+
+**Unreleased:** available from this source checkout, not the published `0.4.0` release.
+
+Notifications are **off by default**, add no required audio dependency, and are
+independent of any particular coding agent or external notification service.
+Enable them with global tmux options, for example in `~/.config/tmux/tmux.conf`:
+
+```tmux
+# macOS: sound even when the pane is active in an attached session.
+set -g @attention_notify 'always'
+set -g @attention_notify_command 'afplay /System/Library/Sounds/Submarine.aiff'
+
+# Linux alternative (provide your own sound file and installed player):
+# set -g @attention_notify_command 'paplay "$HOME/.local/share/sounds/attention.wav"'
+```
+
+| `@attention_notify` | When the command runs |
+| --- | --- |
+| `off` (default) | Never. Empty or unrecognized values also disable notifications. |
+| `unseen` | Accepted `blocked`, `done`, or `failed` events on unfocused panes. |
+| `always` | Those events even on focused panes, whose stored state becomes `idle`. |
+
+The default `@attention_notify_command` is empty, which also disables delivery.
+Both settings are read on each event; use `tmux set -g` for immediate changes,
+or reload tmux.conf after editing it. Removing a line from tmux.conf does not
+unset an existing option: explicitly set `@attention_notify off` to disable.
+Already queued/running commands are not cancelled by changing the options.
+
+**Focused is a tmux concept**, not OS window focus: the active pane in the active
+window of an attached session is considered seen, even if that terminal is
+minimized or you are away. Choose `always` if you still want an audible alert.
+Detached sessions count as unseen. `toggle`, focus acknowledgements, picker
+refreshes, icon rendering, and stale-state downgrades never launch notifications.
+
+Consecutive notification attempts for the same state on a pane are deduplicated,
+including simultaneous callers and focused events stored as `idle`. An explicit
+`working`, `idle`, `unknown`, `clear`, or `toggle` rearms the pane; a different
+accepted notifying state can notify immediately. Focusing a pane does not rearm
+it, and guarded `done`/`failed` events never override an unanswered `blocked` or
+send an extra notification. Failed notification commands count as attempts too;
+there is no retry loop.
+
+The command is trusted **POSIX shell code**, run asynchronously by the tmux server
+through `/bin/sh -c`, independently of `default-shell`. It receives:
+
+- `TMUX_ATTENTION_STATE`: `blocked`, `done`, or `failed` (the original event).
+- `TMUX_ATTENTION_PANE`: the canonical pane ID, such as `%3`.
+
+Use an executable notification script if you want different sounds by state;
+interactive-shell functions such as `play_sound` are not automatically available.
+The command uses the **server's environment/PATH**; absolute executable paths
+are safest for nonstandard installations. Shell quoting is preserved and tmux
+format strings in the command are not expanded.
+
+Notifier stdin is `/dev/null`, stdout/stderr are discarded, and failure is ignored.
+It cannot consume agent input, contaminate hook output, or change the exit code
+of `tmux-attention run`. The caller never waits for playback to finish. A bare
+`printf '\a'` is not a useful notification command because its output is discarded.
+
+Audio plays on the **machine running tmux**, not automatically on an SSH client's
+computer. For remote-client notifications, configure a command that explicitly
+uses an appropriate transport. Outside tmux, state commands remain silent no-ops;
+`run` still executes the command but does not notify.
 
 ## Session/directory and pane pickers
 
@@ -287,7 +355,10 @@ stdin/stdout; redirected invocation prints usage and exits 1 rather than taking
 over a script's terminal.
 
 There is no setup command; `init` is an ordinary directory name. Internal
-`scripts/` entry points are not public API.
+`scripts/` entry points are not public API. Optional notifications use
+`@attention_notify` (`off`/`unseen`/`always`) and `@attention_notify_command`
+(default empty), not extra CLI flags. `run` reports completion/failure through
+the same notification path as explicit state commands.
 
 ## CLI preferences
 
@@ -348,7 +419,9 @@ without a running server. Navigation reads the file once per invocation;
 without executing the file again. Help, version, state commands, `run`, and
 seen hooks do not load it. Invalid Bash or a nonzero config return aborts
 navigation with an error; config stdout is redirected to stderr so it cannot
-corrupt picker rows. Keep this file limited to assignments.
+corrupt picker rows. Keep this file limited to assignments. Sound/notification
+presentation uses the separate [tmux options](#optional-notifications-and-sound),
+so enabling it does not make state commands load navigation config.
 
 `picker_kill_key` and `picker_filter_key` apply only to `panes`;
 `picker_cancel_key` applies to both pickers. An empty key disables that
@@ -459,7 +532,14 @@ set -g @attention_icon_idle    ''
 
 # Render working as unknown after N seconds without an update; no state rewrite.
 set -g @attention_stale_timeout 'off'
+
+# Optional notifications: off (default), unseen, or always. Empty command disables.
+set -g @attention_notify 'off'
+set -g @attention_notify_command ''
 ```
+
+`@attention_notify_last` is internal per-pane duplicate-suppression state, not a
+configuration option; explicit progress/reset commands manage it automatically.
 
 ## Agent integration
 
@@ -488,6 +568,11 @@ For Claude Code, put command hooks in `~/.claude/settings.json`:
 If the hook environment lacks an activated PATH, replace `tmux-attention` with
 `~/.local/share/mise/shims/tmux-attention` for a mise installation. No plugin
 checkout path or shell alias is needed.
+
+Pi and other integrations that already report `blocked` and `done` use the same
+notification path without agent-specific sound code. When enabling these
+notifications, remove separate sound commands from agent hooks to avoid playing
+twice. Keep the state-reporting hooks; notification delivery is optional.
 
 ## Migrating
 
@@ -533,10 +618,12 @@ checkout path or shell alias is needed.
 ```sh
 bash tests/run-tests.sh        # isolated tmux servers, safe beside live sessions
 bash tests/package-tests.sh    # portable archive, checksums, symlinks
+bash tests/notification-tests.sh # isolated fake notifiers; no real audio
 bash scripts/package.sh        # dist/tmux-attention-VERSION.tar.gz + SHA256SUMS
 ```
 
-The acceptance suite includes real-terminal navigation tests and, when mise is
+The acceptance suite includes real-terminal navigation tests, isolated
+notification tests with the selected Bash and `/bin/bash`, and, when mise is
 available, isolated offline mise execution/shim tests. No global tools or user
 configuration are changed by these tests.
 
