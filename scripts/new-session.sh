@@ -135,7 +135,9 @@ pick_destination() {
     msg 'directory picker needs fzf >= 0.48, or set TMUX_ATTENTION_DIR_COMMAND'
     return 2
   fi
-  local args=(--reverse --no-sort --no-tac --no-multi
+  # Own streaming as well as ordering: an inherited --sync would keep the
+  # entire UI blank until directory discovery finishes. Other styling stays.
+  local args=(--reverse --no-sort --no-tac --no-multi --no-sync
     --delimiter "$TAB" --with-nth '2..' --nth '2..'
     --prompt 'sessions/directories > ' --header "$(dir_header)")
   [ -n "$cancel_key" ] && args+=(--bind "$cancel_key:abort")

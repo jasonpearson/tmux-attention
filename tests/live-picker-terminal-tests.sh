@@ -163,9 +163,9 @@ live_signal_diagnostics() {
 
 # Count real production reads (the fixture's T calls bypass the wrapper).
 # Let initial load/setup settle, then require several COMPLETED periodic raw
-# samples without any icon lookups. Those happen on every formatting pass,
-# even without column(1), so this catches fingerprints losing trailing newlines
-# as well as an unconditional rerender that happens to paint identical cells.
+# samples without another row sort. Sorting is needed on every formatting
+# pass, even without column(1), so this catches fingerprints losing trailing
+# newlines as well as an unconditional rerender painting identical cells.
 live_read_count() {
   local count
   count="$(grep -c "^$1$" "$WORK/live-reads" || true)"
@@ -183,14 +183,14 @@ live_wait_polls() {
 }
 
 live_assert_unchanged_polls() {
-  local samples icons
+  local samples renders
   samples="$(live_read_count sample)"
   live_wait_polls "$((samples + 2))"
-  icons="$(live_read_count icon)"
+  renders="$(live_read_count render)"
   samples="$(live_read_count sample)"
   live_wait_polls "$((samples + 3))"
-  [ "$(live_read_count icon)" = "$icons" ] ||
-    fail 'unchanged live samples rerendered the table (repeated icon lookups)'
+  [ "$(live_read_count render)" = "$renders" ] ||
+    fail 'unchanged live samples rerendered the table (repeated row sorting)'
   wait_screen 'panes >'
 }
 
@@ -265,11 +265,12 @@ live_icons() {
 live_picker_terminal_tests() {
   # A private socket avoids racing another suite's last-server shutdown. All
   # helpers and the failure EXIT trap see this dynamically scoped target.
-  local TARGET="${TARGET}-live" PANE real_fzf alpha beta gamma pane i mode
+  local TARGET="${TARGET}-live" PANE real_fzf real_sort alpha beta gamma pane i mode
   local linked linked_window parking since steady aging kill_pane sibling window
   local before n old_tmpdir="${TMPDIR-}" commands paths panes
   local original_ids replacement_ids original_pid empty_pid replacement picker_pid sig status signal_result
   real_fzf="$(command -v fzf)"
+  real_sort="$(command -v sort)"
   cp "$WORK/bin/tmux" "$WORK/tmux-before-live"
   {
     printf '#!/usr/bin/env bash\nreal_tmux=%q\ntarget=%q\nconfig=%q\n' \
@@ -285,7 +286,6 @@ live_picker_terminal_tests() {
       "$WORK/live-held-snapshot" "$WORK/live-snapshot-claimed"
     printf 'reads=%q\n' "$WORK/live-reads"
     printf '%s\n' 'sample=0' 'for arg in "$@"; do' \
-      '  case "$arg" in @attention_icon_*) printf "icon\\n" >> "$reads" ;; esac' \
       '  [ "$arg" != list-panes ] || sample=1' \
       '  if [ "$arg" = list-panes ] && [ -f "$hold" ] && mkdir "$claim" 2>/dev/null; then' \
       '    printf "%s\\n" "$$" > "$entered"' \
@@ -305,7 +305,11 @@ live_picker_terminal_tests() {
     # Stable ASCII pointer makes selection assertions independent of locale.
     printf 'exec %q --pointer=\">\" "$@"\n' "$real_fzf"
   } > "$WORK/bin/fzf"
-  chmod +x "$WORK/bin/tmux" "$WORK/bin/fzf"
+  {
+    printf '#!/usr/bin/env bash\nprintf "render\\n" >> %q\n' "$WORK/live-reads"
+    printf 'exec %q "$@"\n' "$real_sort"
+  } > "$WORK/bin/sort"
+  chmod +x "$WORK/bin/tmux" "$WORK/bin/fzf" "$WORK/bin/sort"
   mkdir -p "$WORK/live-tmp"
   : > "$WORK/live-reads"
   D set-environment -g TMPDIR "$WORK/live-tmp"
@@ -723,7 +727,7 @@ live_picker_terminal_tests() {
   done
 
   mv "$WORK/tmux-before-live" "$WORK/bin/tmux"
-  rm -f "$WORK/bin/fzf" "$WORK/live-old-fzf"
+  rm -f "$WORK/bin/fzf" "$WORK/bin/sort" "$WORK/live-old-fzf"
   if [ -n "$old_tmpdir" ]; then D set-environment -g TMPDIR "$old_tmpdir"; else D set-environment -gu TMPDIR; fi
   printf 'PASS: live pane rerank/selection/query, unchanged-poll caching/no-flicker publication, PID-directed signal cleanup, cold/warm-empty discovery, shutdown/reused-ID rejection, create/rename/delete, four filters/commands, dim rows, linked IDs, clock staleness, K capture, attach/cancel cleanup, and fzf floor\n'
 }

@@ -45,10 +45,13 @@ attention_state_format() {
 
 ensure_icon_formats() {
   local options state name scope marker=4 format version major minor
-  # One snapshot distinguishes missing from explicitly empty options. Refill
-  # unset defaults on later CLI use, but never overwrite a user's icon (even
-  # empty). -o also protects against concurrent first use / config changes.
-  options=$'\n'"$(tmux show-options -g 2>/dev/null)"$'\n' || return 1
+  local commands=()
+  # Setup can supply its already-read options/hooks snapshot. Refill unset
+  # defaults without overwriting empty overrides; -o protects concurrent use.
+  if [ "$#" -gt 0 ]; then options="$1"; else
+    options="$(tmux show-options -g 2>/dev/null)" || return 1
+  fi
+  options=$'\n'"$options"$'\n'
   case "$options" in
     *$'\n'"@attention_formats_version $marker"$'\n'*) ;;
     *)
@@ -75,17 +78,21 @@ ensure_icon_formats() {
       *$'\n'"$name "*) ;;
       # The snapshot already proved the option unset: write the literal
       # default rather than rediscovering that through state_icon's lookups.
-      *) tmux set-option -goq "$name" "$(state_icon_default "$state")" || return 1 ;;
+      *) commands+=(set-option -goq "$name" "$(state_icon_default "$state")" \;) ;;
     esac
   done
-  case "$options" in *$'\n'"@attention_formats_version $marker"$'\n'*) return 0 ;; esac
-  for scope in pane window session global; do
-    # First construct the selected option's name, then expand it. The icon is
-    # data, not a regex replacement or a baked-in format: quotes, #, commas,
-    # braces and backslashes remain literal, and icon changes are live. Append
-    # one space only when nonempty (including the valid custom icon "0").
-    format='#{E;s|(.+)|\1 |:##{@attention_icon_'"$(attention_state_format "$scope")"'#}}'
-    tmux set-option -g "@attention_$scope" "$format" || return 1
-  done
-  tmux set-option -g @attention_formats_version "$marker"
+  case "$options" in
+    *$'\n'"@attention_formats_version $marker"$'\n'*) ;;
+    *)
+      for scope in pane window session global; do
+        # Expand the selected icon option dynamically, as literal data. Append
+        # a space only when nonempty (including the valid custom icon "0").
+        format='#{E;s|(.+)|\1 |:##{@attention_icon_'"$(attention_state_format "$scope")"'#}}'
+        commands+=(set-option -g "@attention_$scope" "$format" \;)
+      done
+      commands+=(set-option -g @attention_formats_version "$marker" \;)
+      ;;
+  esac
+  # At most one connection for all missing defaults/templates, none on a hit.
+  [ "${#commands[@]}" -eq 0 ] || tmux "${commands[@]}"
 }

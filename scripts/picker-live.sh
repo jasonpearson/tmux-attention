@@ -14,7 +14,7 @@ live_server_matches() {
 # and all pane contexts. The key includes elapsed-time staleness, not raw NOW:
 # unchanged work need not be formatted again every second.
 live_refresh() {
-  local dir="$1" force="${2:-}" sample sessions server='' options='' rows='' line value
+  local dir="$1" force="${2:-}" sample sessions server='' options='' rows='' line value REPLY
   local FILTER=all TIMEOUT=0 NOW stale key formatted labels data header stage finish
   local width="${FZF_COLUMNS:-80}" help=0
   local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE GUTTER
@@ -65,8 +65,24 @@ live_refresh() {
     return 0
   fi
 
-  I_BLOCKED="$(state_icon blocked)" I_FAILED="$(state_icon failed)" I_DONE="$(state_icon done)"
-  I_UNKNOWN="$(state_icon unknown)" I_WORKING="$(state_icon working)" I_IDLE="$(state_icon idle)"
+  # The sample already contains every icon. Do not make twelve more tmux
+  # connections (or mix newer icons into this frame's metadata snapshot).
+  # Missing options use defaults; explicitly empty values remain empty.
+  state_icon_default blocked I_BLOCKED; state_icon_default failed I_FAILED
+  state_icon_default done I_DONE; state_icon_default unknown I_UNKNOWN
+  state_icon_default working I_WORKING; state_icon_default idle I_IDLE
+  while IFS= read -r line; do
+    case "$line" in @attention_icon_*\ *) ;; *) continue ;; esac
+    attention_decode_option "${line#* }"
+    case "${line%% *}" in
+      @attention_icon_blocked) I_BLOCKED="$REPLY" ;;
+      @attention_icon_failed) I_FAILED="$REPLY" ;;
+      @attention_icon_done) I_DONE="$REPLY" ;;
+      @attention_icon_unknown) I_UNKNOWN="$REPLY" ;;
+      @attention_icon_working) I_WORKING="$REPLY" ;;
+      @attention_icon_idle) I_IDLE="$REPLY" ;;
+    esac
+  done <<<"$options"
   if [ ! -f "$dir/gutter" ]; then
     GUTTER="$(icon_gutter)"
     # Reserve a gutter even when all icons start empty, so later overrides can

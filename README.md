@@ -230,7 +230,10 @@ The prompt is `sessions/directories > `; **enter** switches to a session or
 creates/reuses a directory's session. Search matches session names and directory
 paths, not the `[session]` / `[dir]` labels. Fuzzy search **only filters**:
 matching entries keep their original order, not fuzzy-score order. Session
-activity includes the latest activity in any of its windows.
+activity includes the latest activity in any of its windows. Directory results
+stream into the picker while discovery runs; you can type before it finishes.
+This picker overrides inherited fzf `--sync` to avoid waiting for the complete
+list before displaying its prompt, while retaining other fzf styling preferences.
 
 A session and a directory remain separate entries even when they lead to the
 same session. Directory selection uses the exact name-based reuse rule above;

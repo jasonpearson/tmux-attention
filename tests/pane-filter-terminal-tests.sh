@@ -150,8 +150,12 @@ WRAPPER
   wait_screen_absent 'enter: jump'
   D send-keys -t "$PANE" -l '?'
   wait_screen 'enter: jump  |  shift-tab: filter  |  K: kill pane  |  ctrl-c: quit'
+  # The optional header appears before its ID-tracked frame reload finishes.
+  # Wait for the frame's hint before another key can meet fzf's reload guard.
+  wait_screen '? to hide keybinds'
   D send-keys -t "$PANE" -l '?'
   wait_screen_absent 'enter: jump'
+  wait_screen '? to show keybinds'
   wait_matches 10
   D send-keys -t "$PANE" -l FILTERPROBE
   wait_screen 'panes > FILTERPROBE'

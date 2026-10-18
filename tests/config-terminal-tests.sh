@@ -31,8 +31,12 @@ config_terminal_tests() {
   wait_screen 'ctrl-f: filter'
   wait_screen 'ctrl-y: quit'
   wait_screen_absent 'kill pane'
+  # The optional header paints before its forced, ID-tracked frame reload.
+  # Wait for that frame too before sending another key into fzf's reload guard.
+  wait_screen '? to hide keybinds'
   D send-keys -t "$PANE" -l '?'
   wait_screen_absent 'enter: jump'
+  wait_screen '? to show keybinds'
 
   # Edits take effect on the NEXT opening. Forced filter reload and periodic
   # state reload still use this opening's arrays and key-hint preferences.

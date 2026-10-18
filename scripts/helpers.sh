@@ -15,6 +15,32 @@ attention_option() {
   fi
 }
 
+# Decode one show-options value into REPLY without eval or a subprocess.
+# tmux wraps strings in single/double quotes and uses vis(3) C/octal escapes
+# even inside single quotes. Shell-looking option data must never be executed.
+attention_decode_option() {
+  local value="$1" char escape
+  case "$value" in \"*\" | \'*\') value="${value:1:${#value}-2}" ;; esac
+  REPLY=''
+  while [ -n "$value" ]; do
+    char="${value:0:1}"; value="${value:1}"
+    if [ "$char" = '\' ] && [ -n "$value" ]; then
+      escape="${value:0:1}"; value="${value:1}"
+      case "$escape" in
+        [0-7])
+          case "${value:0:2}" in
+            [0-7][0-7]) escape="$escape${value:0:2}"; value="${value:2}" ;;
+          esac
+          printf -v char '%b' "\\$escape" ;;
+        a | b | f | n | r | t | v) printf -v char '%b' "\\$escape" ;;
+        s) char=' ' ;;
+        *) char="$escape" ;;
+      esac
+    fi
+    REPLY="$REPLY$char"
+  done
+}
+
 # Environment overrides navigation config/defaults, including explicitly empty
 # values. Config is loaded by navigation callers, never by sourcing helpers.
 # Indirection and the unset-only fallback are Bash 3.2 compatible.
@@ -79,10 +105,23 @@ attention_tool_dirs() {
 # never rewrite themes or install bindings. Sourcing/help/rendering are read-only.
 # The handler path and the tool directories refresh callbacks after relocation.
 ensure_server_hooks() {
-  local handler="${BASH_SOURCE[0]%/*}/seen.sh" marker tools
+  local handler="${BASH_SOURCE[0]%/*}/seen.sh" marker tools snapshot previous='' REPLY
+  local hooks='' hook line key owned index command installed=' ' count=0
+  local commands=()
+  # Always inspect the actual hook arrays, but use one connection for all
+  # setup reads. A config reload can remove hooks without removing our marker.
+  snapshot="$(tmux show-options -g \; show-hooks -g 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      @attention_hooks_version\ *)
+        attention_decode_option "${line#* }"; previous="$REPLY" ;;
+      after-select-pane\[* | after-select-window\[* | client-session-changed\[* | client-attached\[*)
+        hooks="$hooks$line"$'\n' ;;
+    esac
+  done <<<"$snapshot"
   # shellcheck source=formats.sh
   source "${BASH_SOURCE[0]%/*}/formats.sh"
-  ensure_icon_formats || return 1
+  ensure_icon_formats "$snapshot" || return 1
   # The hook runs under the server's environment, which may predate tool
   # activation (mise, Homebrew), so the handler is told where this invocation's
   # tmux and bash live. Only those two directories are recorded: baking the
@@ -91,13 +130,11 @@ ensure_server_hooks() {
   tools="$(attention_tool_dirs)"
   # Revisit servers initialized before legacy unquoted hooks were recognized.
   marker="4:$handler:$tools"
-  local hooks hook line key owned index command installed=' ' count=0
-  hooks="$(tmux show-hooks -g 2>/dev/null)" || return 1
   # A config reload may replace a hook array without clearing our marker.
   # Verify all four handlers before taking the fast path, without reinstalling
   # callbacks on every state update or needing a public repair/setup command.
   if [ "${1:-}" != --force ] &&
-    [ "$(tmux show-options -gqv @attention_hooks_version 2>/dev/null)" = "$marker" ]; then
+    [ "$previous" = "$marker" ]; then
     while IFS= read -r line; do
       case "$line" in *'tmux-attention:seen'*) ;; *) continue ;; esac
       key="${line%%\[*}"
@@ -129,7 +166,7 @@ ensure_server_hooks() {
             owned="$key"
           else
             # Remove only our duplicate/old handlers, never other plugins'.
-            tmux set-hook -gu "$key" || return 1
+            commands+=(set-hook -gu "$key" \;)
           fi
           ;;
       esac
@@ -138,14 +175,18 @@ ensure_server_hooks() {
       # A deterministic free slot makes simultaneous first invocations converge
       # instead of appending duplicate hooks. Respect a pre-existing occupant.
       index=4242
-      while printf '%s\n' "$hooks" | grep -q "^${hook}\\[${index}\\] "; do
-        index=$((index + 1))
+      while :; do
+        case $'\n'"$hooks" in
+          *$'\n'"$hook[$index] "*) index=$((index + 1)) ;;
+          *) break ;;
+        esac
       done
       owned="$hook[$index]"
     fi
-    tmux set-hook -g "$owned" "$command" || return 1
+    commands+=(set-hook -g "$owned" "$command" \;)
   done
-  tmux set-option -g @attention_hooks_version "$marker"
+  commands+=(set-option -g @attention_hooks_version "$marker")
+  tmux "${commands[@]}"
 }
 
 # Callers run ensure_server_hooks themselves once the server is known to exist
@@ -162,28 +203,33 @@ attention_go_to() {
 # Lower number = more urgent. Aggregate scopes show the lowest-numbered
 # state among their member panes.
 state_priority() {
+  local value
   case "$1" in
-    failed)  echo 1 ;;
-    blocked) echo 2 ;;
-    done)    echo 3 ;;
-    unknown) echo 4 ;;
-    working) echo 5 ;;
-    idle)    echo 6 ;;
-    *)       echo 7 ;; # untracked / unrecognized
+    failed)  value=1 ;;
+    blocked) value=2 ;;
+    done)    value=3 ;;
+    unknown) value=4 ;;
+    working) value=5 ;;
+    idle)    value=6 ;;
+    *)       value=7 ;; # untracked / unrecognized
   esac
+  if [ "$#" -ge 2 ]; then printf -v "$2" '%s' "$value"; else printf '%s\n' "$value"; fi
 }
 
 # The built-in icons. Setup copies these into unset @attention_icon_<state>
 # options; rendering reads the options (state_icon), so overrides stay live.
 state_icon_default() {
+  local value=''
   case "$1" in
-    blocked) printf '🟠' ;;
-    failed)  printf '☠️' ;;
-    done)    printf '🔥' ;;
-    unknown) printf '❓' ;;
-    working) printf '⚙️' ;;
+    blocked) value='🟠' ;;
+    failed)  value='☠️' ;;
+    done)    value='🔥' ;;
+    unknown) value='❓' ;;
+    working) value='⚙️' ;;
     idle)    ;; # intentionally empty
   esac
+  # Snapshot callers assign in their own shell; ordinary callers still print.
+  if [ "$#" -ge 2 ]; then printf -v "$2" '%s' "$value"; else printf '%s' "$value"; fi
 }
 
 state_icon() {
@@ -212,7 +258,8 @@ effective_state() {
       *) [ $((now - since)) -gt "$timeout" ] && state=unknown ;;
     esac
   fi
-  printf '%s' "$state"
+  # Row builders can assign directly instead of forking once per pane.
+  if [ "$#" -ge 5 ]; then printf -v "$5" '%s' "$state"; else printf '%s' "$state"; fi
 }
 
 # Focused = active pane in the active window of an attached session.

@@ -34,26 +34,6 @@ VS16="$(printf '\xef\xb8\x8f')"
 # values have an x sentinel to keep every field in its position.
 LIST_FMT="#{session_id}${TAB}#{session_name}${TAB}#{session_activity}${TAB}#{window_id}${TAB}#{window_index}${TAB}#{window_activity}${TAB}x#{window_name}${TAB}#{window_panes}${TAB}#{pane_id}${TAB}#{pane_index}${TAB}x#{pane_current_command}${TAB}x#{pane_current_path}${TAB}x#{@attention_state}${TAB}x#{@attention_since}"
 
-shorten_path() {
-  case "$1" in
-    "$HOME") printf '~' ;;
-    "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
-# Icons are fetched once per listing rather than once per pane.
-icon_for() {
-  case "$1" in
-    blocked) printf '%s' "$I_BLOCKED" ;;
-    failed) printf '%s' "$I_FAILED" ;;
-    done) printf '%s' "$I_DONE" ;;
-    unknown) printf '%s' "$I_UNKNOWN" ;;
-    working) printf '%s' "$I_WORKING" ;;
-    idle) printf '%s' "$I_IDLE" ;;
-  esac
-}
-
 # Upper bound: two cells per visible character, excluding emoji variation
 # selectors. Overestimation merely widens the tab stop; underestimation would
 # push an icon past it. No wcwidth implementation is authoritative for emoji.
@@ -144,7 +124,7 @@ header_text() {
 # still includes the window name; split windows retain the familiar w.p label.
 build_pane_rows() {
   local s_id s_name s_act w_id w_idx w_act w_name w_panes p_id p_idx p_cmd p_path state since
-  local eff act label group agent mode="${1:-list}"
+  local eff priority icon path act label group agent mode="${1:-list}"
   while IFS="$TAB" read -r s_id s_name s_act w_id w_idx w_act w_name w_panes \
     p_id p_idx p_cmd p_path state since; do
     group=0
@@ -156,14 +136,16 @@ build_pane_rows() {
     p_path="${p_path#x}"
     state="${state#x}"
     since="${since#x}"
-    eff=''
-    [ -n "$state" ] && eff="$(effective_state "$state" "$since" "$TIMEOUT" "$NOW")"
+    # Assign in this shell: command substitutions here multiplied startup
+    # cost by three/four subprocesses for every pane (including linked rows).
+    effective_state "$state" "$since" "$TIMEOUT" "$NOW" eff
+    state_priority "$eff" priority
     # tmux exposes window output and session input activity, not per-pane
     # activity. Use the later timestamp without changing the tracked state.
     act="$s_act"
     [ "$w_act" -gt "$act" ] && act="$w_act"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t' \
-      "$group" "$(state_priority "$eff")" "$act" "$s_name" "$w_idx" "$p_idx" "$p_id"
+      "$group" "$priority" "$act" "$s_name" "$w_idx" "$p_idx" "$p_id"
     # Direct jumps need only opaque IDs, not icons or display formatting.
     if [ "$mode" = targets ]; then
       printf '%s\t%s\n' "$s_id" "$w_id"
@@ -176,8 +158,19 @@ build_pane_rows() {
     fi
     agent=0
     if attention_is_agent "$p_cmd"; then agent=1; fi
+    icon=''
+    case "$eff" in
+      blocked) icon="$I_BLOCKED" ;; failed) icon="$I_FAILED" ;;
+      done) icon="$I_DONE" ;; unknown) icon="$I_UNKNOWN" ;;
+      working) icon="$I_WORKING" ;; idle) icon="$I_IDLE" ;;
+    esac
+    case "$p_path" in
+      "$HOME") path='~' ;;
+      "$HOME"/*) path="~${p_path#"$HOME"}" ;;
+      *) path="$p_path" ;;
+    esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(icon_for "$eff")" "$s_name" "$label" "$p_cmd" "$(shorten_path "$p_path")" "$s_id" "$w_id" "$group" "$agent"
+      "$icon" "$s_name" "$label" "$p_cmd" "$path" "$s_id" "$w_id" "$group" "$agent"
   done
 }
 
