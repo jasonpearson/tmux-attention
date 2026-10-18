@@ -5,12 +5,25 @@ ROOT="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REAL_TMUX="$(command -v tmux)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/attention-lifecycle.XXXXXX")"
 SOCKET="$WORK/socket"
-T() { "$REAL_TMUX" -S "$SOCKET" "$@"; }
+T() {
+  local rc=0
+  "$REAL_TMUX" -S "$SOCKET" "$@" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$1" = kill-server ] && [ "$hold_shutdown" -eq 1 ]; then
+    # 3.8 can evict a stopped client after 10s. Freeze the owned server after
+    # shutdown is acknowledged so this negative fixture outlives ANY poll cost.
+    kill -STOP "$server_pid" || return $?
+    server_held=1
+  fi
+  return "$rc"
+}
 source "$ROOT/tests/tmux-lifecycle.sh"
 client_pid='' release_pid='' server_pid=''
+hold_shutdown=0 server_held=0
 cleanup() {
   local rc=$? n
   trap - EXIT
+  hold_shutdown=0
+  [ "$server_held" -eq 0 ] || kill -CONT "$server_pid" 2>/dev/null || true
   # Cancel the delayed resumer before reaping its target (no stale PID signal).
   if [ -n "$release_pid" ]; then
     kill "$release_pid" 2>/dev/null || true
@@ -90,17 +103,24 @@ reap_control_client
 wait_fixture_exit
 printf 'PASS: old kill-server semantics reproduce server exited unexpectedly\n'
 
-# The real helper must time out, not return success, while the client is still
-# stopped. This also makes replacing it with plain kill-server reliably red.
+# The real helper must time out, not return success, while its captured PID
+# is held alive. A stopped client alone is insufficient on tmux >= 3.8: its
+# exit deadline can beat our bounded iteration count on a slow CI runner.
 start_server
 stop_control_client
+hold_shutdown=1
 rc=0
 stop_target_server >"$WORK/timeout-output" 2>"$WORK/timeout-error" || rc=$?
 [ "$rc" -eq 1 ] || fail "held shutdown barrier returned $rc instead of timeout"
 grep -Fq "timed out waiting for isolated server PID $server_pid to exit" "$WORK/timeout-error" ||
   fail 'missing bounded shutdown timeout diagnostic'
 kill -0 "$server_pid" || fail 'timeout fixture no longer holds its server'
-reap_control_client
+hold_shutdown=0
+kill -CONT "$client_pid"
+kill -CONT "$server_pid"
+server_held=0
+wait "$client_pid"
+client_pid=''
 wait_fixture_exit
 printf 'PASS: shutdown barrier fails with the captured PID when its bounded wait expires\n'
 

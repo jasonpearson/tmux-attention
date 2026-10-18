@@ -11,16 +11,20 @@ attention_reset_notification() {
 # written. Use the original event and focus snapshot, not the stored state:
 # the seen rule writes idle even for done/failed/blocked when focused.
 attention_notify() {
-  local pane="$1" state="$2" focused="$3" mode command script runner action
+  local pane="$1" state="$2" focused="$3" mode command script runner action REPLY
   mode="$(attention_option '@attention_notify' 'off')"
   case "$mode" in
     always) ;;
     unseen) [ "$focused" = 0 ] || return 0 ;;
     *) return 0 ;; # off, empty, or invalid: fail closed
   esac
-  # display-message reads the raw option without show-options' value escaping
-  # on older tmux versions. The command is shell code, not a tmux format.
-  command="$(tmux display-message -p '#{@attention_notify_command}' 2>/dev/null)" || return 0
+  # Neither display-message nor show-options -v is lossless on older tmux.
+  # Decode the quoted option after normalizing the client's output escaping;
+  # shell code (including literal backslashes/newlines) stays data until /bin/sh.
+  attention_tmux_snapshot show-options -gq @attention_notify_command || return 0
+  case "$REPLY" in @attention_notify_command\ *) ;; *) return 0 ;; esac
+  attention_decode_option "${REPLY#* }"
+  command="$REPLY"
   [ -n "$command" ] || return 0
   pane="$(tmux display-message -p -t "$pane" '#{pane_id}' 2>/dev/null)" || return 0
   case "$pane" in %*) ;; *) return 0 ;; esac

@@ -14,13 +14,15 @@ live_server_matches() {
 # and all pane contexts. The key includes elapsed-time staleness, not raw NOW:
 # unchanged work need not be formatted again every second.
 live_refresh() {
-  local dir="$1" force="${2:-}" sample sessions server='' options='' rows='' line value REPLY
+  local dir="$1" force="${2:-}" sample sample_rc=0 sessions server='' options='' rows='' line value REPLY
   local FILTER=all TIMEOUT=0 NOW stale key formatted labels data header stage finish
   local width="${FZF_COLUMNS:-80}" help=0
   local I_BLOCKED I_FAILED I_DONE I_UNKNOWN I_WORKING I_IDLE GUTTER
   local NL=$'\n'
   [ -d "$dir" ] || return 1
-  if ! sample="$(tmux display-message -p '#{pid}' \; show-options -g \; list-panes -a -F "$LIST_FMT" 2>/dev/null)"; then
+  attention_tmux_snapshot display-message -p '#{pid}' \; show-options -g \; list-panes -a -F "$LIST_FMT" || sample_rc=$?
+  sample="$REPLY"
+  if [ "$sample_rc" -ne 0 ]; then
     # list-panes needs a current target even with -a on a running-empty
     # server. Keep its PID/options in that case; otherwise retry failed reads.
     if [ -n "$sample" ]; then

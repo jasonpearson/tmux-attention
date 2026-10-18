@@ -14,11 +14,14 @@ pane_enter_terminal_tests() {
 
   mkdir -p "$WORK/projects/enter-source" "$WORK/panes/ENTERREFRESH-selected" \
     "$WORK/panes/ENTERREFRESH-other"
-  TARGET_PANE="$(T -f "$WORK/tmux.conf" new-session -d -s enter-source \
+  # Automatic window renaming is unrelated to this fixture. A late initial
+  # rename can start a keyed reload just as we type the setup query, before
+  # reaching the deliberately held rerank that this test actually exercises.
+  TARGET_PANE="$(T -f "$WORK/tmux.conf" new-session -d -s enter-source -n source \
     -c "$WORK/projects/enter-source" -P -F '#{pane_id}')"
-  first="$(T new-session -d -s enter-destination -c "$WORK/panes/ENTERREFRESH-selected" \
+  first="$(T new-session -d -s enter-destination -n selected -c "$WORK/panes/ENTERREFRESH-selected" \
     -P -F '#{pane_id}' 'sleep 300')"
-  second="$(T new-window -d -t '=enter-destination:' -c "$WORK/panes/ENTERREFRESH-other" \
+  second="$(T new-window -d -t '=enter-destination:' -n other -c "$WORK/panes/ENTERREFRESH-other" \
     -P -F '#{pane_id}' 'sleep 300')"
   T set -p -t "$first" @attention_state failed
   T set -p -t "$second" @attention_state working

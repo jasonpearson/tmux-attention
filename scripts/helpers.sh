@@ -15,6 +15,33 @@ attention_option() {
   fi
 }
 
+# Read a batch into REPLY, normalizing older tmux client-output escaping.
+# tmux 3.4 adds a backslash before $ followed by a letter, _ or {, even to
+# already-quoted show-options output. Probe that behavior in the SAME connection
+# rather than guessing from the client version (the server may differ).
+# Preserve partial output/status for live sampling of an empty running server.
+attention_tmux_snapshot() {
+  local output probe value prefix rc=0
+  output="$(tmux display-message -p '$attention_output' \; "$@" 2>/dev/null)" || rc=$?
+  probe="${output%%$'\n'*}"
+  REPLY=''
+  case "$output" in *$'\n'*) REPLY="${output#*$'\n'}" ;; esac
+  if [ "$probe" = '\$attention_output' ]; then
+    value="$REPLY"; REPLY=''
+    while [[ "$value" = *'\$'* ]]; do
+      prefix="${value%%'\$'*}"
+      value="${value#*'\$'}"
+      REPLY="$REPLY$prefix"
+      case "$value" in
+        [a-zA-Z_\{]*) REPLY="$REPLY\$" ;;
+        *) REPLY="$REPLY"'\$' ;;
+      esac
+    done
+    REPLY="$REPLY$value"
+  fi
+  return "$rc"
+}
+
 # Decode one show-options value into REPLY without eval or a subprocess.
 # tmux wraps strings in single/double quotes and uses vis(3) C/octal escapes
 # even inside single quotes. Shell-looking option data must never be executed.
@@ -110,7 +137,8 @@ ensure_server_hooks() {
   local commands=()
   # Always inspect the actual hook arrays, but use one connection for all
   # setup reads. A config reload can remove hooks without removing our marker.
-  snapshot="$(tmux show-options -g \; show-hooks -g 2>/dev/null)" || return 1
+  attention_tmux_snapshot show-options -g \; show-hooks -g || return 1
+  snapshot="$REPLY"
   while IFS= read -r line; do
     case "$line" in
       @attention_hooks_version\ *)

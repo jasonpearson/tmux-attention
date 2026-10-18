@@ -155,7 +155,9 @@ quiet_count 'focus, rendering, stale display and picker refresh never notify' 12
 # Shell code remains literal through both tmux parsers and the server's shell.
 # Hash sequences must not turn into tmux format expansions or format shell jobs.
 literal="quote's \"double\" \\ slash \$HOME #{pane_id} ## #(printf FORMAT_JOB)"
-set_command "$literal"
+# A multiline command must survive output escaping too, not become one long
+# comment or reinterpret literal backslashes while reading the option.
+T set -g @attention_notify_command $': # literal comment\n'"$(attention_shell_quote "$notifier") $(attention_shell_quote "$literal")"$'\n'
 cli working; cli done
 expect_count 'complex command quoting launches exactly once' 13
 assert_eq 'quotes, dollars, hashes, backslashes and formats survive literally' \

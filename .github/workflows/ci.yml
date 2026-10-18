@@ -36,4 +36,6 @@ jobs:
           fi
           # Terminal tests cd outside this checkout's .tool-versions scope.
           # Activate real tool paths so fzf remains available there.
+          mise exec -- tmux -V
+          mise exec -- fzf --version
           mise exec -- /bin/bash tests/run-tests.sh

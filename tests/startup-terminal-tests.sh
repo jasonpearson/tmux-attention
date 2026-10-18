@@ -40,7 +40,7 @@ startup_terminal_tests() {
   wait_screen "$icon"
   calls="$(<"$WORK/startup-count")"
   [ "$calls" -le 3 ] || fail "warm pane startup used $calls tmux connections (budget 3)"
-  for icon in "F'new" 'F"new' 'F\n' 'X#{pane_id}' '$' '$(touch ./ICON_EXECUTED)'; do
+  for icon in "F'new" 'F"new' 'F\n' 'X#{pane_id}' '$' '$HOME' '${HOME}' '\$HOME' '$(touch ./ICON_EXECUTED)'; do
     T set -g @attention_icon_failed "$icon"
     wait_screen "$icon"
   done
